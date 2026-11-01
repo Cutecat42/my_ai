@@ -1,4 +1,5 @@
 import { useState, useEffect } from "react";
+import ReactMarkdown from "react-markdown";
 
 function App() {
   // --- Auth State ---
@@ -14,9 +15,8 @@ function App() {
   const [input, setInput] = useState("");
   const [isTyping, setIsTyping] = useState(false);
 
-  const TUNNEL_URL =
-    "https://manufacturing-horizontal-turns-majority.trycloudflare.com";
-  const OLLAMA_MODEL = "gemma4:26b";
+  const TUNNEL_URL = "https://prefers-starting-bar-rear.trycloudflare.com";
+  const OLLAMA_MODEL = "gemma4:12b";
 
   // Check connection automatically once unlocked
   useEffect(() => {
@@ -52,11 +52,10 @@ function App() {
   }
 
   async function handleSendMessage(e) {
-    e.preventDefault();
+    if (e) e.preventDefault();
     if (!input.trim() || isTyping) return;
 
     const userMessage = input.trim();
-    // Add the user's message and an empty AI message bubble to fill in live
     setMessages((prev) => [
       ...prev,
       { role: "user", text: userMessage },
@@ -74,8 +73,8 @@ function App() {
         body: JSON.stringify({
           model: OLLAMA_MODEL,
           prompt: userMessage,
-          // Stream tokens live as they generate
-          stream: true,
+          stream: false,
+          think: false,
         }),
       });
 
@@ -84,34 +83,18 @@ function App() {
       }
 
       setIsConnected(true);
+      const data = await res.json();
 
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder();
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        const chunk = decoder.decode(value, { stream: true });
-        const lines = chunk.split("\n");
-
-        for (const line of lines) {
-          if (line.trim() !== "") {
-            const parsed = JSON.parse(line);
-            if (parsed.response) {
-              // Append each new word to the last message bubble
-              setMessages((prev) => {
-                const updated = [...prev];
-                const lastIndex = updated.length - 1;
-                updated[lastIndex] = {
-                  ...updated[lastIndex],
-                  text: updated[lastIndex].text + parsed.response,
-                };
-                return updated;
-              });
-            }
-          }
-        }
+      if (data.response) {
+        setMessages((prev) => {
+          const updated = [...prev];
+          const lastIndex = updated.length - 1;
+          updated[lastIndex] = {
+            ...updated[lastIndex],
+            text: data.response,
+          };
+          return updated;
+        });
       }
     } catch (error) {
       console.error("Chat error:", error);
@@ -129,6 +112,7 @@ function App() {
   if (isLocked) {
     return (
       <div
+        key="locked-screen"
         style={{
           maxWidth: "400px",
           margin: "100px auto",
@@ -146,7 +130,18 @@ function App() {
           style={{ display: "flex", flexDirection: "column", gap: "10px" }}
         >
           <input
+            type="text"
+            name="username"
+            defaultValue="AI-Portal"
+            autoComplete="username"
+            style={{ display: "none" }}
+            readOnly
+          />
+          <input
+            key="passphrase-input"
             type="password"
+            name="password"
+            autoComplete="current-password"
             value={passkey}
             onChange={(e) => setPasskey(e.target.value)}
             placeholder="Passphrase"
@@ -182,8 +177,9 @@ function App() {
   // --- Unlocked Chat View ---
   return (
     <div
+      key="chat-screen"
       style={{
-        maxWidth: "600px",
+        maxWidth: "700px",
         margin: "40px auto",
         padding: "20px",
         fontFamily: "sans-serif",
@@ -191,6 +187,18 @@ function App() {
         borderRadius: "8px",
       }}
     >
+      <style>{`
+        @keyframes geminiPulse {
+          0%, 100% { opacity: 0.3; transform: scale(0.9); }
+          50% { opacity: 1; transform: scale(1.1); }
+        }
+        /* Resets basic markdown margins inside chat bubbles so they stay clean */
+        .markdown-body p { margin: 0 0 8px 0; }
+        .markdown-body p:last-child { margin: 0; }
+        .markdown-body h3 { margin: 12px 0 6px 0; font-size: 1.1em; }
+        .markdown-body ul, .markdown-body ol { margin: 0 0 8px 0; padding-left: 20px; }
+      `}</style>
+
       <div
         style={{
           display: "flex",
@@ -226,7 +234,7 @@ function App() {
 
       <div
         style={{
-          height: "300px",
+          height: "450px",
           overflowY: "auto",
           background: "#f8f9fa",
           padding: "15px",
@@ -235,7 +243,7 @@ function App() {
           marginBottom: "15px",
           display: "flex",
           flexDirection: "column",
-          gap: "10px",
+          gap: "14px",
         }}
       >
         {messages.length === 0 && (
@@ -250,28 +258,60 @@ function App() {
               alignSelf: msg.role === "user" ? "flex-end" : "flex-start",
               background: msg.role === "user" ? "#1a73e8" : "#e9ecef",
               color: msg.role === "user" ? "#fff" : "#000",
-              padding: "8px 14px",
+              padding: "10px 16px",
               borderRadius: "16px",
-              maxWidth: "80%",
+              maxWidth: "85%",
               wordWrap: "break-word",
-              lineHeight: "1.4",
+              lineHeight: "1.5",
+              whiteSpace: "pre-wrap", // Handles raw newlines correctly
+              textAlign: "left", // Ensures AI responses read naturally left-to-right
             }}
           >
-            {msg.text}
+            {msg.role === "ai" && msg.text === "" ? (
+              <div style={{ display: "flex", gap: "5px", padding: "6px 0" }}>
+                <span
+                  style={{
+                    width: "8px",
+                    height: "8px",
+                    background: "#666",
+                    borderRadius: "50%",
+                    display: "inline-block",
+                    animation: "geminiPulse 1.2s infinite ease-in-out both",
+                    animationDelay: "0s",
+                  }}
+                />
+                <span
+                  style={{
+                    width: "8px",
+                    height: "8px",
+                    background: "#666",
+                    borderRadius: "50%",
+                    display: "inline-block",
+                    animation: "geminiPulse 1.2s infinite ease-in-out both",
+                    animationDelay: "0.2s",
+                  }}
+                />
+                <span
+                  style={{
+                    width: "8px",
+                    height: "8px",
+                    background: "#666",
+                    borderRadius: "50%",
+                    display: "inline-block",
+                    animation: "geminiPulse 1.2s infinite ease-in-out both",
+                    animationDelay: "0.4s",
+                  }}
+                />
+              </div>
+            ) : msg.role === "ai" ? (
+              <div className="markdown-body">
+                <ReactMarkdown>{msg.text}</ReactMarkdown>
+              </div>
+            ) : (
+              msg.text
+            )}
           </div>
         ))}
-        {isTyping && (
-          <div
-            style={{
-              alignSelf: "flex-start",
-              color: "#666",
-              fontSize: "0.9em",
-              fontStyle: "italic",
-            }}
-          >
-            AI is typing...
-          </div>
-        )}
       </div>
 
       <form
@@ -279,18 +319,18 @@ function App() {
         style={{ display: "flex", gap: "10px" }}
       >
         <input
+          key="chat-message-input"
           type="text"
           value={input}
           onChange={(e) => setInput(e.target.value)}
-          placeholder="Type a message..."
           disabled={isTyping}
+          placeholder={isTyping ? "AI is processing..." : "Type a message..."}
           style={{
             flex: 1,
             padding: "10px",
             fontSize: "16px",
             borderRadius: "4px",
             border: "1px solid #ccc",
-            outline: "none",
           }}
         />
         <button
@@ -299,7 +339,7 @@ function App() {
           style={{
             padding: "10px 20px",
             fontSize: "16px",
-            background: isTyping || !input.trim() ? "#ccc" : "#28a745",
+            background: isTyping || !input.trim() ? "#ccc" : "#1a73e8",
             color: "#fff",
             border: "none",
             borderRadius: "4px",
