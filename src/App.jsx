@@ -56,7 +56,12 @@ function App() {
     if (!input.trim() || isTyping) return;
 
     const userMessage = input.trim();
-    setMessages((prev) => [...prev, { role: "user", text: userMessage }]);
+    // Add the user's message and an empty AI message bubble to fill in live
+    setMessages((prev) => [
+      ...prev,
+      { role: "user", text: userMessage },
+      { role: "ai", text: "" },
+    ]);
     setInput("");
     setIsTyping(true);
 
@@ -69,7 +74,8 @@ function App() {
         body: JSON.stringify({
           model: OLLAMA_MODEL,
           prompt: userMessage,
-          stream: false,
+          // Stream tokens live as they generate
+          stream: true,
         }),
       });
 
@@ -77,12 +83,36 @@ function App() {
         throw new Error(`HTTP ${res.status}`);
       }
 
-      const data = await res.json();
-      setMessages((prev) => [
-        ...prev,
-        { role: "ai", text: data.response || "No response received." },
-      ]);
       setIsConnected(true);
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        const chunk = decoder.decode(value, { stream: true });
+        const lines = chunk.split("\n");
+
+        for (const line of lines) {
+          if (line.trim() !== "") {
+            const parsed = JSON.parse(line);
+            if (parsed.response) {
+              // Append each new word to the last message bubble
+              setMessages((prev) => {
+                const updated = [...prev];
+                const lastIndex = updated.length - 1;
+                updated[lastIndex] = {
+                  ...updated[lastIndex],
+                  text: updated[lastIndex].text + parsed.response,
+                };
+                return updated;
+              });
+            }
+          }
+        }
+      }
     } catch (error) {
       console.error("Chat error:", error);
       setMessages((prev) => [
