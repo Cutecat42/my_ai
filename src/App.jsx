@@ -6,7 +6,7 @@ function App() {
   const [passkey, setPasskey] = useState("");
   const [authError, setAuthError] = useState("");
 
-  const SECRET_PASSPHRASE = import.meta.env.SECRET_PASSPHRASE;
+  const SECRET_PASSPHRASE = import.meta.env.VITE_SECRET_PASSPHRASE;
 
   // --- Connection & Chat States ---
   const [isConnected, setIsConnected] = useState(false);
