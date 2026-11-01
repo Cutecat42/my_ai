@@ -138,9 +138,9 @@ function App() {
             readOnly
           />
           <input
-            key="passphrase-input"
-            type="password"
+            id="app-passphrase"
             name="password"
+            type="password"
             autoComplete="current-password"
             value={passkey}
             onChange={(e) => setPasskey(e.target.value)}
