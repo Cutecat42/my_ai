@@ -15,6 +15,10 @@ function App() {
   const [input, setInput] = useState("");
   const [isTyping, setIsTyping] = useState(false);
 
+  // --- Compression ---
+  const [backgroundMemory, setBackgroundMemory] = useState("");
+  const [isConsolidating, setIsConsolidating] = useState(false);
+
   const TUNNEL_URL = "https://prefers-starting-bar-rear.trycloudflare.com";
   const OLLAMA_MODEL = "gemma4:12b";
 
@@ -24,6 +28,13 @@ function App() {
       checkConnection();
     }
   }, [isLocked]);
+
+  // Automatically triggers whenever the chat history gets to be too much
+  useEffect(() => {
+    if (messages.length >= 24) {
+      consolidateUniversalMemory();
+    }
+  }, [messages]);
 
   async function checkConnection() {
     try {
@@ -64,6 +75,11 @@ function App() {
     setInput("");
     setIsTyping(true);
 
+    // Prepend the memory stack if it contains data
+    const optimizedPrompt = backgroundMemory
+      ? `[System Background Memory: The following is a consolidated summary of vital context, facts, and rules established earlier in this specific conversation. Retain this context perfectly.]\n${backgroundMemory}\n\n[Current Turn]\nUser: ${userMessage}`
+      : userMessage;
+
     try {
       const res = await fetch(`${TUNNEL_URL}/api/generate`, {
         method: "POST",
@@ -72,7 +88,7 @@ function App() {
         },
         body: JSON.stringify({
           model: OLLAMA_MODEL,
-          prompt: userMessage,
+          prompt: optimizedPrompt,
           stream: false,
           think: false,
         }),
@@ -105,6 +121,62 @@ function App() {
       setIsConnected(false);
     } finally {
       setIsTyping(false);
+    }
+  }
+
+  async function consolidateUniversalMemory() {
+    if (messages.length < 20 || isConsolidating) return;
+
+    setIsConsolidating(true);
+
+    // Format the older messages for the compression
+    const archiveLog = messages
+      .map((m) => `${m.role === "user" ? "User" : "AI"}: ${m.text}`)
+      .join("\n");
+
+    const compressionPrompt = `Analyze the following historical log and the existing background memory profile. Generate an updated, highly condensed memory stack. Your response must strictly track and list:
+1. Core topics discussed or project rules established.
+2. Explicit user preferences, parameters, or character details.
+3. Crucial chronological milestones or finalized answers.
+
+Maintain a dense, bulleted format. Do not use conversational filler or meta-commentary.
+
+[Existing Background Memory Profile]:
+${backgroundMemory || "No prior history."}
+
+[Recent Historical Log to Absorb]:
+${archiveLog}`;
+
+    try {
+      const res = await fetch(`${TUNNEL_URL}/api/generate`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: OLLAMA_MODEL,
+          prompt: compressionPrompt,
+          stream: false,
+          think: false,
+        }),
+      });
+
+      if (res.ok) {
+        const data = await res.json();
+        if (data.response) {
+          // Update the permanent memory stack with the new consolidated facts
+          setBackgroundMemory(data.response.trim());
+
+          // Retain only the last 4 messages to preserve immediate conversational flow
+          setMessages((prev) => prev.slice(-4));
+          console.log("Universal memory stack successfully consolidated.");
+        }
+      }
+    } catch (error) {
+      console.error(
+        "Memory consolidation routine encountered an error:",
+        error,
+      );
+    } finally {
+      setIsConsolidating(false);
     }
   }
 
@@ -231,6 +303,61 @@ function App() {
           </button>
         </div>
       </div>
+
+      {backgroundMemory && (
+        <div
+          style={{
+            padding: "10px 14px",
+            background: "#e8f0fe",
+            border: "1px solid #b4d2ff",
+            borderRadius: "6px",
+            marginBottom: "15px",
+            fontSize: "13px",
+            color: "#1a73e8",
+            lineHeight: "1.4",
+          }}
+        >
+          <div
+            style={{
+              fontWeight: "bold",
+              marginBottom: "4px",
+              display: "flex",
+              alignItems: "center",
+              gap: "6px",
+            }}
+          >
+            🧠 Universal Memory Active:
+            <span
+              style={{
+                fontWeight: "normal",
+                fontStyle: "italic",
+                color: isConsolidating ? "#dc3545" : "#28a745",
+              }}
+            >
+              {isConsolidating
+                ? "Consolidating new data..."
+                : "Tracking background context"}
+            </span>
+          </div>
+          {/* Subtle scroll box showing exactly what the AI is remembering */}
+          <div
+            style={{
+              maxHeight: "80px",
+              overflowY: "auto",
+              background: "#ffffff",
+              padding: "8px",
+              borderRadius: "4px",
+              fontSize: "11px",
+              color: "#444",
+              whiteSpace: "pre-wrap",
+              border: "1px solid #d2e3fc",
+              marginTop: "6px",
+            }}
+          >
+            {backgroundMemory}
+          </div>
+        </div>
+      )}
 
       <div
         style={{
