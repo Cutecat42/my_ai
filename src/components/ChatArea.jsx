@@ -1,0 +1,330 @@
+import React from "react";
+import ReactMarkdown from "react-markdown";
+
+function ChatArea({
+  sidebarOpen,
+  setSidebarOpen,
+  isConnected,
+  showSettings,
+  setShowSettings,
+  customInstructions,
+  setCustomInstructions,
+  backgroundMemory,
+  scrollContainerRef,
+  currentSessionId,
+  messages,
+  currentUser,
+  messagesEndRef,
+  handleSendMessage,
+  chatInputRef,
+  input,
+  setInput,
+  isTyping,
+  activeDropdown,
+}) {
+  return (
+    <div
+      style={{
+        flex: 1,
+        display: "flex",
+        flexDirection: "column",
+        height: "100%",
+        position: "relative",
+        overflow: "hidden",
+      }}
+    >
+      <div
+        style={{
+          padding: "15px 20px",
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "center",
+          background: "#fff",
+          zIndex: 5,
+          flexShrink: 0,
+        }}
+      >
+        <div style={{ display: "flex", alignItems: "center", gap: "15px" }}>
+          <button
+            onClick={() => setSidebarOpen(!sidebarOpen)}
+            style={{
+              background: "transparent",
+              border: "none",
+              fontSize: "20px",
+              cursor: "pointer",
+              padding: "5px",
+              color: "#5f6368",
+            }}
+          >
+            ☰
+          </button>
+          <h2 style={{ margin: "0", color: "#1a73e8", fontSize: "1.2rem" }}>
+            Nova
+          </h2>
+        </div>
+        <div style={{ display: "flex", gap: "10px", alignItems: "center" }}>
+          <span
+            style={{
+              fontSize: "12px",
+              fontWeight: "bold",
+              color: isConnected ? "#28a745" : "#dc3545",
+              display: window.innerWidth < 768 ? "none" : "block",
+            }}
+          >
+            {isConnected ? "● Online" : "○ Offline"}
+          </span>
+          <button
+            onClick={() => setShowSettings(!showSettings)}
+            style={{
+              padding: "6px 12px",
+              fontSize: "13px",
+              background: showSettings ? "#e8eaed" : "#f0f4f9",
+              border: "none",
+              borderRadius: "18px",
+              cursor: "pointer",
+              color: "#202124",
+            }}
+          >
+            ⚙️ Rules & Memory
+          </button>
+        </div>
+      </div>
+
+      {showSettings && (
+        <div
+          style={{
+            padding: "15px 20px",
+            background: "#f8f9fa",
+            borderBottom: "1px solid #e0e0e0",
+            flexShrink: 0,
+            display: "flex",
+            gap: "20px",
+            flexDirection: window.innerWidth < 768 ? "column" : "row",
+          }}
+        >
+          <div style={{ flex: 1 }}>
+            <div
+              style={{
+                fontWeight: "bold",
+                marginBottom: "8px",
+                fontSize: "13px",
+                color: "#5f6368",
+              }}
+            >
+              Global Directives
+            </div>
+            <textarea
+              value={customInstructions}
+              onChange={(e) => setCustomInstructions(e.target.value)}
+              style={{
+                width: "100%",
+                height: "80px",
+                padding: "10px",
+                borderRadius: "12px",
+                border: "1px solid #ccc",
+                resize: "vertical",
+                boxSizing: "border-box",
+                fontFamily: "inherit",
+                color: "#202124",
+              }}
+            />
+          </div>
+          <div style={{ flex: 1 }}>
+            <div
+              style={{
+                fontWeight: "bold",
+                marginBottom: "8px",
+                fontSize: "13px",
+                color: "#5f6368",
+              }}
+            >
+              Active Session Memory (Auto-Compacts)
+            </div>
+            <textarea
+              readOnly
+              value={
+                backgroundMemory ||
+                "Memory is currently empty. (Nova compacts history after 24 messages)."
+              }
+              style={{
+                width: "100%",
+                height: "80px",
+                padding: "10px",
+                borderRadius: "12px",
+                border: "1px solid #ccc",
+                resize: "vertical",
+                boxSizing: "border-box",
+                fontFamily: "inherit",
+                background: "#e8eaed",
+                color: "#3c4043",
+                fontSize: "13px",
+              }}
+            />
+          </div>
+        </div>
+      )}
+
+      <div
+        ref={scrollContainerRef}
+        style={{
+          flex: 1,
+          overflowY: "auto",
+          padding: "20px",
+          display: "flex",
+          flexDirection: "column",
+          gap: "20px",
+          pointerEvents: activeDropdown ? "none" : "auto",
+        }}
+      >
+        {(!currentSessionId || messages.length === 0) && (
+          <div
+            style={{ margin: "auto", textAlign: "center", color: "#5f6368" }}
+          >
+            <h3 style={{ fontSize: "28px", marginBottom: "10px" }}>
+              Hello, {currentUser}.
+            </h3>
+          </div>
+        )}
+
+        {messages?.map((msg, i) => (
+          <div
+            key={i}
+            style={{
+              alignSelf: msg.role === "user" ? "flex-end" : "flex-start",
+              background: msg.role === "user" ? "#e8f0fe" : "#f1f3f4",
+              color: "#202124",
+              padding: "12px 18px",
+              borderRadius: "24px",
+              borderBottomRightRadius: msg.role === "user" ? "6px" : "24px",
+              borderBottomLeftRadius: msg.role === "ai" ? "6px" : "24px",
+              maxWidth: window.innerWidth < 768 ? "90%" : "75%",
+              lineHeight: "1.6",
+              fontSize: "15px",
+            }}
+          >
+            {msg.role === "ai" && msg.text === "" ? (
+              <div style={{ display: "flex", gap: "6px", padding: "4px 0" }}>
+                <span
+                  style={{
+                    width: "8px",
+                    height: "8px",
+                    background: "#80868b",
+                    borderRadius: "50%",
+                    animation: "geminiPulse 1.2s infinite both 0s",
+                  }}
+                />
+                <span
+                  style={{
+                    width: "8px",
+                    height: "8px",
+                    background: "#80868b",
+                    borderRadius: "50%",
+                    animation: "geminiPulse 1.2s infinite both 0.2s",
+                  }}
+                />
+                <span
+                  style={{
+                    width: "8px",
+                    height: "8px",
+                    background: "#80868b",
+                    borderRadius: "50%",
+                    animation: "geminiPulse 1.2s infinite both 0.4s",
+                  }}
+                />
+              </div>
+            ) : msg.role === "ai" ? (
+              <div className="markdown-body">
+                <ReactMarkdown>{msg.text}</ReactMarkdown>
+              </div>
+            ) : (
+              <div style={{ whiteSpace: "pre-wrap" }}>{msg.text}</div>
+            )}
+          </div>
+        ))}
+        <div ref={messagesEndRef} />
+      </div>
+
+      <div
+        style={{
+          padding: window.innerWidth < 768 ? "10px" : "20px",
+          background: "#fff",
+          flexShrink: 0,
+        }}
+      >
+        <form
+          onSubmit={handleSendMessage}
+          style={{
+            display: "flex",
+            gap: "10px",
+            maxWidth: "800px",
+            margin: "0 auto",
+            position: "relative",
+            alignItems: "flex-end",
+            background: "#f0f4f9",
+            borderRadius: "28px",
+            padding: "6px",
+            boxShadow: "0 2px 6px rgba(0,0,0,0.05)",
+          }}
+        >
+          <textarea
+            ref={chatInputRef}
+            value={input}
+            onChange={(e) => {
+              setInput(e.target.value);
+              e.target.style.height = "50px";
+              e.target.style.height =
+                Math.min(e.target.scrollHeight, 150) + "px";
+            }}
+            disabled={isTyping}
+            placeholder={isTyping ? "Nova is thinking..." : "Message Nova..."}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && !e.shiftKey) {
+                e.preventDefault();
+                e.target.style.height = "50px";
+                handleSendMessage(e);
+              }
+            }}
+            style={{
+              flex: 1,
+              padding: "12px 50px 12px 20px",
+              fontSize: "16px",
+              color: "#202124",
+              border: "none",
+              outline: "none",
+              resize: "none",
+              height: "50px",
+              maxHeight: "150px",
+              background: "transparent",
+              lineHeight: "1.4",
+              overflowY: "auto",
+            }}
+          />
+          <button
+            type="submit"
+            disabled={isTyping || !input.trim()}
+            style={{
+              position: "absolute",
+              right: "10px",
+              bottom: "8px",
+              width: "36px",
+              height: "36px",
+              borderRadius: "50%",
+              background: isTyping || !input.trim() ? "transparent" : "#1a73e8",
+              color: isTyping || !input.trim() ? "#9aa0a6" : "#fff",
+              border: "none",
+              display: "flex",
+              justifyContent: "center",
+              alignItems: "center",
+              cursor: isTyping || !input.trim() ? "default" : "pointer",
+              transition: "background 0.2s",
+            }}
+          >
+            ↑
+          </button>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+export default ChatArea;
