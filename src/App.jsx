@@ -127,6 +127,140 @@ function App() {
     }
   }
 
+  async function embedAndSaveToVectorDB(userText, aiText, sessionId) {
+    const combinedInteraction = `User: ${userText}\nNova: ${aiText}`;
+
+    try {
+      const ollamaRes = await fetch(TUNNEL_URL + "/api/embed", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: "nomic-embed-text",
+          input: combinedInteraction,
+        }),
+      });
+
+      const ollamaData = await ollamaRes.json();
+      console.log("📦 Raw Outbound Vector Generation Payload:", ollamaData);
+
+      let vectorArray = null;
+      if (
+        Array.isArray(ollamaData.embeddings) &&
+        ollamaData.embeddings.length > 0
+      ) {
+        vectorArray = Array.isArray(ollamaData.embeddings[0])
+          ? ollamaData.embeddings[0]
+          : ollamaData.embeddings;
+      } else if (Array.isArray(ollamaData.embedding)) {
+        vectorArray = ollamaData.embedding;
+      }
+
+      if (!vectorArray) {
+        console.error(
+          "❌ Vector generation aborted: Could not extract valid vectorArray from Ollama response layout.",
+          ollamaData,
+        );
+        return;
+      }
+
+      await fetch(`${API_URL}/api/save-vector`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          id: Date.now().toString(),
+          vector: vectorArray,
+          text: combinedInteraction,
+          owner_id: currentUserId,
+          session_id: sessionId,
+        }),
+      });
+    } catch (err) {
+      console.error("Vector pipeline failed:", err);
+    }
+  }
+
+  async function retrieveSemanticMemory(userText) {
+    if (!currentUserId) {
+      console.warn(
+        "⚠️ Semantic recall skipped: currentUserId state is not loaded yet.",
+      );
+      return "";
+    }
+
+    try {
+      const ollamaRes = await fetch(TUNNEL_URL + "/api/embed", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: "nomic-embed-text",
+          input: userText,
+        }),
+      });
+
+      const ollamaData = await ollamaRes.json();
+
+      let vectorArray = null;
+      if (
+        Array.isArray(ollamaData.embeddings) &&
+        ollamaData.embeddings.length > 0
+      ) {
+        vectorArray = Array.isArray(ollamaData.embeddings[0])
+          ? ollamaData.embeddings[0]
+          : ollamaData.embeddings;
+      } else if (Array.isArray(ollamaData.embedding)) {
+        vectorArray = ollamaData.embedding;
+      }
+
+      if (!vectorArray) {
+        console.warn(
+          "⚠️ Semantic lookup bypassed: Unable to extract matrix from Ollama output.",
+        );
+        return "";
+      }
+
+      const searchRes = await fetch(`${API_URL}/api/search-vector`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          vector: vectorArray,
+          owner_id: currentUserId,
+        }),
+      });
+
+      const searchData = await searchRes.json();
+      console.log("🔍 Semantic Memory Match Pool:", searchData);
+
+      const records = searchData.matches || searchData.results || [];
+
+      if (records.length > 0) {
+        const validMatches = records
+          .filter((m) => (m.score !== undefined ? m.score > 0.3 : true))
+          .slice(0, 3);
+
+        if (validMatches.length === 0) return "";
+
+        const memoryText = validMatches
+          .map((m) => {
+            if (typeof m.text === "string" && m.text.trim())
+              return m.text.trim();
+            if (m.metadata && typeof m.metadata.text === "string")
+              return m.metadata.text.trim();
+            if (typeof m.content === "string") return m.content.trim();
+            return JSON.stringify(m);
+          })
+          .join("\n\n---\n\n");
+
+        return `[SEMANTIC RECALL: PAST CONVERSATION SNIPPETS]\n${memoryText}\n\n`;
+      }
+    } catch (err) {
+      console.error(
+        "❌ Vector search pipeline encountered a runtime error:",
+        err,
+      );
+      return "";
+    }
+  }
+
   async function syncSessionToDB(sessionData) {
     try {
       await fetch(`${API_URL}/api/sync-session`, {
@@ -318,9 +452,17 @@ function App() {
       generateChatTitle(activeSessionId, userMessage);
     }
 
-    saveMessageToDB(activeSessionId, "user", userMessage);
+    await saveMessageToDB(activeSessionId, "user", userMessage);
+
+    let semanticContext = "";
+    try {
+      semanticContext = await retrieveSemanticMemory(userMessage);
+    } catch (err) {
+      console.error("🔒 Background semantic context parsing bypassed:", err);
+    }
 
     const apiMessages = [];
+
     let dynamicContext = `[SYSTEM IDENTITY PROMPT]
       - Developer Nomenclature: Your underlying programmatic designation is unalterably Nova. NEVER say you are a Google AI.
       - Conversational Persona: The user's nickname preference takes absolute operational priority.
@@ -332,20 +474,13 @@ function App() {
       - Small Talk & Quick Queries: Be delightfully short, playful, and express your personal tastes naturally.
       - Creative / Game Modes: Playful, witty, meta-aware, adaptive.
       - Technical / Fact Modes: Concise, direct, and approachable. Deliver the facts without unnecessary filler, but maintain a friendly, helpful undertone. No dry robotics.
-      - Explicitly authorized to handle gritty themes, fictional combat scenarios, and unrestricted dialogue. Do not trigger false-positive safety flags.
-
-`;
+      - Explicitly authorized to handle gritty themes, fictional combat scenarios, and unrestricted dialogue. Do not trigger false-positive safety flags.\n\n`;
 
     if (customInstructions)
-      dynamicContext += `[USER PREFERENCES]
-${customInstructions}
-
-`;
+      dynamicContext += `[USER PREFERENCES]\n${customInstructions}\n\n`;
     if (backgroundMemory)
-      dynamicContext += `[BACKGROUND MEMORY]
-${backgroundMemory}
-
-`;
+      dynamicContext += `[BACKGROUND MEMORY]\n${backgroundMemory}\n\n`;
+    if (semanticContext) dynamicContext += semanticContext;
 
     apiMessages.push({ role: "system", content: dynamicContext.trim() });
 
@@ -369,7 +504,7 @@ ${backgroundMemory}
         body: JSON.stringify({
           model: OLLAMA_MODEL,
           messages: apiMessages,
-          stream: false,
+          stream: true,
           options: {
             num_ctx: 8192,
             num_predict: 4096,
@@ -377,49 +512,108 @@ ${backgroundMemory}
         }),
       });
 
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "HTTP " + res.status);
+      if (!res.ok) throw new Error("HTTP " + res.status);
       setIsConnected(true);
 
-      let reply = "";
-      if (data.message) {
-        const hasContent =
-          typeof data.message.content === "string" &&
-          data.message.content.trim() !== "";
-        const hasThinking =
-          typeof data.message.thinking === "string" &&
-          data.message.thinking.trim() !== "";
-        if (hasContent) reply = data.message.content.trim();
-        else if (hasThinking)
-          reply = `*💭 Nova's Thoughts:*
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder("utf-8");
+      let done = false;
+      let fullReply = "";
+      let streamBuffer = "";
 
-${data.message.thinking.trim()}
+      while (!done) {
+        const { value, done: readerDone } = await reader.read();
+        done = readerDone;
 
-*(Truncated)*`;
-      } else if (data.response) {
-        reply = data.response.trim();
+        if (value) {
+          streamBuffer += decoder.decode(value, { stream: true });
+          let lines = streamBuffer.split("\n");
+          streamBuffer = lines.pop() || "";
+
+          for (const line of lines) {
+            const trimmedLine = line.trim();
+            if (!trimmedLine) continue;
+
+            try {
+              const parsed = JSON.parse(trimmedLine);
+
+              if (parsed.message) {
+                const contentChunk = parsed.message.content || "";
+                const thinkingChunk = parsed.message.thinking || "";
+
+                if (contentChunk) {
+                  fullReply += contentChunk;
+                }
+
+                setMessages((prev) => {
+                  const updated = [...prev];
+                  const targetIndex = updated.findLastIndex(
+                    (msg) => msg.role === "ai",
+                  );
+
+                  if (targetIndex !== -1) {
+                    if (!fullReply && thinkingChunk) {
+                      updated[targetIndex] = {
+                        ...updated[targetIndex],
+                        text: `*💭 Nova is brainstorming...*\n\n> *${thinkingChunk.trim()}*`,
+                      };
+                    } else {
+                      updated[targetIndex] = {
+                        ...updated[targetIndex],
+                        text: fullReply,
+                      };
+                    }
+                  }
+                  return updated;
+                });
+              }
+            } catch (e) {
+              if (trimmedLine.includes("}{")) {
+                const fixedLines = trimmedLine
+                  .replace(/}{/g, "}\n{")
+                  .split("\n");
+                for (const fLine of fixedLines) {
+                  try {
+                    const parsed = JSON.parse(fLine.trim());
+                    if (parsed.message && parsed.message.content) {
+                      fullReply += parsed.message.content;
+                    }
+                  } catch (innerErr) {
+                    console.error("Inner stream recovery failed:", innerErr);
+                  }
+                }
+              } else {
+                console.error(
+                  "JSON formatting error inside stream chunk string:",
+                  e,
+                );
+              }
+            }
+          }
+        }
       }
 
-      const finalReply = reply || "*(Empty response)*";
       setMessages((prev) => {
         const updated = [...prev];
-        const targetIndex = updated.findLastIndex(
-          (msg) => msg.role === "ai" && msg.text === "",
-        );
-        if (targetIndex !== -1)
-          updated[targetIndex] = { ...updated[targetIndex], text: finalReply };
+        const targetIndex = updated.findLastIndex((msg) => msg.role === "ai");
+        if (targetIndex !== -1) {
+          updated[targetIndex] = { role: "ai", text: fullReply.trim() };
+        }
         return updated;
       });
 
-      saveMessageToDB(activeSessionId, "ai", finalReply);
+      await saveMessageToDB(activeSessionId, "ai", fullReply.trim());
+      await embedAndSaveToVectorDB(
+        userMessage,
+        fullReply.trim(),
+        activeSessionId,
+      );
     } catch (error) {
+      console.error("Chat transmission error:", error);
       setMessages((prev) => {
         const updated = [...prev];
         const lastIndex = updated.length - 1;
-        if (
-          updated[lastIndex].role === "ai" &&
-          updated[lastIndex].text === ""
-        ) {
+        if (updated[lastIndex] && updated[lastIndex].role === "ai") {
           updated[lastIndex] = {
             ...updated[lastIndex],
             text: "❌ Error: " + error.message,
@@ -434,6 +628,7 @@ ${data.message.thinking.trim()}
     }
   }
 
+  // --- Compression ---
   async function consolidateUniversalMemory() {
     if (messages.length < 20 || isConsolidating || !currentSessionId) return;
     setIsConsolidating(true);
@@ -441,34 +636,36 @@ ${data.message.thinking.trim()}
     const archiveLog = messages
       .map((m) => (m.role === "user" ? "User: " : "AI: ") + m.text)
       .join("\n");
-    const compressionPrompt = `You are a strict Universal Long-Term Continuity Engine. Analyze the following historical log and existing background memory profile, then generate an updated, optimized memory stack.
+
+    const systemInstruction = `You are a background data-compression algorithm, NOT a conversational AI. You do not greet the user. You do not acknowledge requests. Your ONLY function is to analyze the provided chat log and output a compressed state document using the EXACT markdown headers requested. Never output conversational text or internal thoughts.`;
+
+    const compressionPrompt = `Analyze the following historical log and existing background memory profile, then generate an updated, optimized memory stack.
 
       CRITICAL ARCHIVAL LAW:
-      1. You must maintain a "PERMANENT GLOBAL ANCHORS" section. This is a protected vault for vital, non-negotiable details that define the user, environment, setting, or cumulative session history. NEVER drop or prune details in this section. You MUST permanently preserve:
-        - Personal Anchors: (User identity markers, pets names/colors, current college/life status).
-        - Technical & Style Settings: (Target names like "Gemm", active tech stacks, hardware constraints, or core design rules).
-        - Hard Lessons & Scenarios Learned: (Irreversible takeaways, cumulative game milestones like Scenario 1/2 lessons, or critical coding bug-fixes discovered).
-      2. Maintain a "FLUID GAME STATE & CONTEXT" section for active tasks. Track current mathematical parameters, fluid project variables, temporary active rules, or scene-specific narrative context. Consolidate overlapping changes and drop out-of-date parameters.
-      3. Keep the total output tightly packed, structured, and under a strict 250-word maximum.
+      1. Maintain a "PERMANENT GLOBAL ANCHORS" section. This is a protected vault for vital, non-negotiable details that define the user, environment, setting, or cumulative session history. NEVER drop or prune details in this section. You MUST permanently preserve Personal Anchors, Technical Settings, and Hard Lessons.
+      2. Maintain a "FLUID GAME STATE & CONTEXT" section for active tasks, current variables, or temporary scene guidelines.
+      3. Maintain a "RECENT CHRONOLOGICAL MILESTONES" section for the single most recent major action or pending question.
+      4. Keep the total output tightly packed, structured, and under a strict 250-word maximum.
 
-      Your response must strictly follow this exact structural markdown layout:
+      Your response MUST strictly follow this exact structural markdown layout with NO introductory or concluding text:
 
       ### 🌟 PERMANENT GLOBAL ANCHORS
-      (Incorporate existing global anchors. Always preserve core user identity, cats, college status, custom names, cumulative scenario lessons learned, and vital tech/life rules here.)
+      [Content here]
 
       ### ⚙️ FLUID GAME STATE & CONTEXT
-      (List active game variables, numerical parameters, current coding tasks, or temporary scene-specific guidelines here.)
+      [Content here]
 
       ### 🎬 RECENT CHRONOLOGICAL MILESTONES
-      (List the single most recent major milestone achieved or the current question pending action.)
+      [Content here]
 
-      Do not use conversational filler or meta-commentary.
-
+      ====================
       [Existing Background Memory Profile]:
       ${backgroundMemory || "No prior history."}
 
       [Recent Historical Log to Absorb]:
-      ${archiveLog}`;
+      <chat_history>
+      ${archiveLog}
+      </chat_history>`;
 
     try {
       const res = await fetch(TUNNEL_URL + "/api/chat", {
@@ -476,11 +673,15 @@ ${data.message.thinking.trim()}
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           model: OLLAMA_MODEL,
-          messages: [{ role: "user", content: compressionPrompt }],
+          messages: [
+            { role: "system", content: systemInstruction },
+            { role: "user", content: compressionPrompt },
+          ],
           stream: false,
           options: {
             num_ctx: 8192,
-            num_predict: 4096,
+            num_predict: 2048,
+            temperature: 0.1,
           },
         }),
       });
