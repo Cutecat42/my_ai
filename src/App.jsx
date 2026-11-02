@@ -273,6 +273,8 @@ function App() {
     if (backgroundMemory)
       dynamicContext += `[BACKGROUND MEMORY]\n${backgroundMemory}\n\n`;
 
+    apiMessages.push({ role: "system", content: dynamicContext.trim() });
+
     messages.forEach((m) => {
       if (m.text && m.text.trim() !== "") {
         apiMessages.push({
@@ -282,11 +284,7 @@ function App() {
       }
     });
 
-    let finalUserPayload = "";
-    if (apiMessages.filter((m) => m.role === "user").length === 0)
-      finalUserPayload += dynamicContext.trim() + "\n\n";
-    finalUserPayload += `User: ${userMessage}`;
-    apiMessages.push({ role: "user", content: finalUserPayload });
+    apiMessages.push({ role: "user", content: userMessage });
 
     try {
       const res = await fetch(TUNNEL_URL + "/api/chat", {
@@ -296,7 +294,10 @@ function App() {
           model: OLLAMA_MODEL,
           messages: apiMessages,
           stream: false,
-          options: { num_predict: isDeepTask ? -1 : 400, num_ctx: 8192 },
+          options: {
+            num_predict: isDeepTask ? 1500 : 650,
+            num_ctx: 8192,
+          },
         }),
       });
 
@@ -1003,6 +1004,7 @@ function App() {
                 flex: 1,
                 padding: "12px 50px 12px 20px",
                 fontSize: "16px",
+                color: "#202124",
                 border: "none",
                 outline: "none",
                 resize: "none",
