@@ -23,6 +23,10 @@ function App() {
   const [currentSessionId, setCurrentSessionId] = useState(null);
   const [activeDropdown, setActiveDropdown] = useState(null);
 
+  // --- Rename States ---
+  const [editingChatId, setEditingChatId] = useState(null);
+  const [editTitleValue, setEditTitleValue] = useState("");
+
   const [isConnected, setIsConnected] = useState(false);
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState("");
@@ -41,10 +45,16 @@ function App() {
   const chatInputRef = useRef(null);
   const scrollContainerRef = useRef(null);
 
+  const chatSessionsRef = useRef(chatSessions);
+
   // --- Initialization & API Fetching ---
   useEffect(() => {
     localStorage.setItem("customInstructions", customInstructions);
   }, [customInstructions]);
+
+  useEffect(() => {
+    chatSessionsRef.current = chatSessions;
+  }, [chatSessions]);
 
   useEffect(() => {
     if (currentUser && currentUserId) {
@@ -127,6 +137,26 @@ function App() {
     }
   }
 
+  // --- Sidebar Rename & Delete Event Handlers ---
+  function startRename(session) {
+    setEditingChatId(session.id);
+    setEditTitleValue(session.title);
+    setActiveDropdown(null);
+  }
+
+  function submitRename(session) {
+    const newTitle = editTitleValue.trim() || session.title;
+    setChatSessions((prev) => {
+      const updated = prev.map((s) =>
+        s.id === session.id ? { ...s, title: newTitle } : s,
+      );
+      const sessionToSync = updated.find((s) => s.id === session.id);
+      if (sessionToSync) syncSessionToDB(sessionToSync);
+      return updated;
+    });
+    setEditingChatId(null);
+  }
+
   async function handleDeleteChat(id) {
     setChatSessions((prev) => prev.filter((s) => s.id !== id));
     if (currentSessionId === id) {
@@ -144,6 +174,46 @@ function App() {
       });
     } catch (e) {
       console.error("Failed to delete chat from cloud:", e);
+    }
+  }
+
+  // --- Auto-Naming Engine ---
+  async function generateChatTitle(sessionId, firstMessage) {
+    try {
+      const res = await fetch(TUNNEL_URL + "/api/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: OLLAMA_MODEL,
+          messages: [
+            {
+              role: "user",
+              content: `Write a short, catchy title (maximum 4 words) for a chat that starts with this message. Output ONLY the title, no quotes, no extra text: "${firstMessage}"`,
+            },
+          ],
+          stream: false,
+          options: { num_predict: 10, num_ctx: 1024 },
+        }),
+      });
+      const data = await res.json();
+      let smartTitle = "";
+      if (data.message) smartTitle = data.message.content.trim();
+      else if (data.response) smartTitle = data.response.trim();
+
+      smartTitle = smartTitle.replace(/['"]+/g, "");
+
+      if (smartTitle) {
+        setChatSessions((prev) => {
+          const updated = prev.map((s) =>
+            s.id === sessionId ? { ...s, title: smartTitle } : s,
+          );
+          const sessionToSync = updated.find((s) => s.id === sessionId);
+          if (sessionToSync) syncSessionToDB(sessionToSync);
+          return updated;
+        });
+      }
+    } catch (e) {
+      console.error("Auto-title generation failed", e);
     }
   }
 
@@ -230,29 +300,23 @@ function App() {
     setIsTyping(true);
 
     if (messages.length === 0) {
-      const title = userMessage.slice(0, 30) + "...";
+      const tempTitle = userMessage.slice(0, 30) + "...";
       setChatSessions((prev) =>
-        prev.map((s) => (s.id === activeSessionId ? { ...s, title } : s)),
+        prev.map((s) =>
+          s.id === activeSessionId ? { ...s, title: tempTitle } : s,
+        ),
       );
       syncSessionToDB({
         id: activeSessionId,
         owner_id: currentUserId,
-        title: title,
+        title: tempTitle,
         background_memory: backgroundMemory,
       });
+
+      generateChatTitle(activeSessionId, userMessage);
     }
 
     saveMessageToDB(activeSessionId, "user", userMessage);
-
-    const lowerMessage = userMessage.toLowerCase();
-    const isDeepTask =
-      userMessage.split(/\s+/).length >= 8 ||
-      lowerMessage.includes("story") ||
-      lowerMessage.includes("write") ||
-      lowerMessage.includes("game") ||
-      lowerMessage.includes("explain") ||
-      lowerMessage.includes("solve") ||
-      lowerMessage.includes("search");
 
     const apiMessages = [];
     let dynamicContext = `[SYSTEM IDENTITY PROMPT]
@@ -275,7 +339,9 @@ function App() {
 
     apiMessages.push({ role: "system", content: dynamicContext.trim() });
 
-    messages.forEach((m) => {
+    const recentMessages = messages.slice(-8);
+
+    recentMessages.forEach((m) => {
       if (m.text && m.text.trim() !== "") {
         apiMessages.push({
           role: m.role === "ai" ? "assistant" : "user",
@@ -295,8 +361,8 @@ function App() {
           messages: apiMessages,
           stream: false,
           options: {
-            num_predict: isDeepTask ? 1500 : 650,
             num_ctx: 8192,
+            num_predict: 4096,
           },
         }),
       });
@@ -364,14 +430,23 @@ function App() {
     const compressionPrompt = `You are a strict Universal Long-Term Continuity Engine. Analyze the following historical log and existing background memory profile, then generate an updated, optimized memory stack.
 
       CRITICAL ARCHIVAL LAW:
-      1. You must maintain a "PERMANENT GLOBAL ANCHORS" section. NEVER drop or prune details in this section.
-      2. Maintain a "FLUID GAME STATE & CONTEXT" section for active tasks. Consolidate overlapping changes and drop out-of-date parameters.
+      1. You must maintain a "PERMANENT GLOBAL ANCHORS" section. This is a protected vault for vital, non-negotiable details that define the user, environment, setting, or cumulative session history. NEVER drop or prune details in this section. You MUST permanently preserve:
+        - Personal Anchors: (User identity markers, pets names/colors, current college/life status).
+        - Technical & Style Settings: (Target names like "Gemm", active tech stacks, hardware constraints, or core design rules).
+        - Hard Lessons & Scenarios Learned: (Irreversible takeaways, cumulative game milestones like Scenario 1/2 lessons, or critical coding bug-fixes discovered).
+      2. Maintain a "FLUID GAME STATE & CONTEXT" section for active tasks. Track current mathematical parameters, fluid project variables, temporary active rules, or scene-specific narrative context. Consolidate overlapping changes and drop out-of-date parameters.
       3. Keep the total output tightly packed, structured, and under a strict 250-word maximum.
 
       Your response must strictly follow this exact structural markdown layout:
+
       ### 🌟 PERMANENT GLOBAL ANCHORS
+      (Incorporate existing global anchors. Always preserve core user identity, cats, college status, custom names, cumulative scenario lessons learned, and vital tech/life rules here.)
+
       ### ⚙️ FLUID GAME STATE & CONTEXT
+      (List active game variables, numerical parameters, current coding tasks, or temporary scene-specific guidelines here.)
+
       ### 🎬 RECENT CHRONOLOGICAL MILESTONES
+      (List the single most recent major milestone achieved or the current question pending action.)
 
       Do not use conversational filler or meta-commentary.
 
@@ -389,6 +464,10 @@ function App() {
           model: OLLAMA_MODEL,
           messages: [{ role: "user", content: compressionPrompt }],
           stream: false,
+          options: {
+            num_ctx: 8192,
+            num_predict: 4096,
+          },
         }),
       });
 
@@ -404,12 +483,15 @@ function App() {
 
       if (consolidatedContent) {
         setBackgroundMemory(consolidatedContent);
+
+        const activeSession = chatSessionsRef.current.find(
+          (s) => s.id === currentSessionId,
+        );
+
         await syncSessionToDB({
           id: currentSessionId,
           owner_id: currentUserId,
-          title:
-            chatSessions.find((s) => s.id === currentSessionId)?.title ||
-            "Chat",
+          title: activeSession?.title || "Chat",
           background_memory: consolidatedContent,
         });
       }
@@ -634,24 +716,49 @@ function App() {
                   borderRadius: "8px",
                 }}
               >
-                <button
-                  onClick={() => loadSession(session.id)}
-                  style={{
-                    flex: 1,
-                    padding: "12px 10px",
-                    background: "transparent",
-                    border: "none",
-                    textAlign: "left",
-                    cursor: "pointer",
-                    fontSize: "14px",
-                    color: "#202124",
-                    whiteSpace: "nowrap",
-                    overflow: "hidden",
-                    textOverflow: "ellipsis",
-                  }}
-                >
-                  💬 {session.title}
-                </button>
+                {/* Inline Rename Input OR Normal Button */}
+                {editingChatId === session.id ? (
+                  <input
+                    autoFocus
+                    value={editTitleValue}
+                    onChange={(e) => setEditTitleValue(e.target.value)}
+                    onBlur={() => submitRename(session)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") submitRename(session);
+                    }}
+                    style={{
+                      flex: 1,
+                      padding: "10px",
+                      margin: "2px 0 2px 10px",
+                      fontSize: "14px",
+                      borderRadius: "6px",
+                      border: "1px solid #1a73e8",
+                      outline: "none",
+                      background: "#fff",
+                    }}
+                  />
+                ) : (
+                  <button
+                    onClick={() => loadSession(session.id)}
+                    style={{
+                      flex: 1,
+                      padding: "12px 10px",
+                      background: "transparent",
+                      border: "none",
+                      textAlign: "left",
+                      cursor: "pointer",
+                      fontSize: "14px",
+                      color: "#202124",
+                      whiteSpace: "nowrap",
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                    }}
+                  >
+                    💬 {session.title}
+                  </button>
+                )}
+
+                {/* 3 Dots Menu Button */}
                 <button
                   onClick={() =>
                     setActiveDropdown(
@@ -670,6 +777,7 @@ function App() {
                   ⋮
                 </button>
 
+                {/* 3-Dots Dropdown Menu Options */}
                 {activeDropdown === session.id && (
                   <div
                     style={{
@@ -684,6 +792,22 @@ function App() {
                       minWidth: "120px",
                     }}
                   >
+                    <button
+                      onClick={() => startRename(session)}
+                      style={{
+                        padding: "10px 15px",
+                        background: "transparent",
+                        border: "none",
+                        color: "#202124",
+                        cursor: "pointer",
+                        width: "100%",
+                        textAlign: "left",
+                        fontSize: "14px",
+                        borderBottom: "1px solid #f0f4f9",
+                      }}
+                    >
+                      ✏️ Rename
+                    </button>
                     <button
                       onClick={() => handleDeleteChat(session.id)}
                       style={{
