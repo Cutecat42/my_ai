@@ -1,5 +1,81 @@
-import React from "react";
+import React, { useState } from "react";
 import ReactMarkdown from "react-markdown";
+import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
+import { vscDarkPlus } from "react-syntax-highlighter/dist/esm/styles/prism";
+
+const CodeBlock = ({ match, codeString }) => {
+  const [copied, setCopied] = useState(false);
+
+  const handleCopy = () => {
+    navigator.clipboard.writeText(codeString);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+
+  return (
+    <div
+      style={{
+        position: "relative",
+        borderRadius: "8px",
+        overflow: "hidden",
+        margin: "12px 0",
+        border: "1px solid #333",
+      }}
+    >
+      <div
+        style={{
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "center",
+          background: "#1e1e1e",
+          padding: "8px 15px",
+          color: "#9cdcfe",
+          fontSize: "12px",
+          fontFamily: "monospace",
+        }}
+      >
+        <span style={{ textTransform: "uppercase", fontWeight: "bold" }}>
+          {match && match[1]}
+        </span>
+        <button
+          onClick={handleCopy}
+          style={{
+            background: "transparent",
+            border: "none",
+            color: copied ? "#4caf50" : "#ccc",
+            cursor: "pointer",
+            display: "flex",
+            alignItems: "center",
+            gap: "5px",
+          }}
+        >
+          {copied ? "✅ Copied!" : "📋 Copy"}
+        </button>
+      </div>
+      <SyntaxHighlighter
+        style={vscDarkPlus}
+        language={match && match[1] ? match[1] : "javascript"}
+        PreTag="pre"
+        customStyle={{
+          margin: 0,
+          padding: "15px",
+          borderRadius: "0 0 8px 8px",
+          fontSize: "14px",
+          background: "#1e1e1e",
+          overflowX: "auto",
+        }}
+        codeTagProps={{
+          style: {
+            whiteSpace: "pre",
+            display: "block",
+          },
+        }}
+      >
+        {codeString}
+      </SyntaxHighlighter>
+    </div>
+  );
+};
 
 function ChatArea({
   sidebarOpen,
@@ -234,7 +310,42 @@ function ChatArea({
               </div>
             ) : msg.role === "ai" ? (
               <div className="markdown-body">
-                <ReactMarkdown>{msg.text}</ReactMarkdown>
+                <ReactMarkdown
+                  components={{
+                    code({ node, inline, className, children, ...props }) {
+                      const match = /language-(\w+)/.exec(className || "");
+
+                      let rawString = "";
+                      if (node && node.children && node.children.length > 0) {
+                        rawString = node.children[0].value;
+                      } else {
+                        rawString = String(children).replace(/\n$/, "");
+                      }
+
+                      return !inline && match ? (
+                        <CodeBlock match={match} codeString={rawString} />
+                      ) : (
+                        <code
+                          {...props}
+                          className={className}
+                          style={{
+                            background: "#d7dadd",
+                            padding: "2px 6px",
+                            borderRadius: "4px",
+                            color: "#d93025",
+                            fontFamily: "monospace",
+                            fontSize: "13px",
+                            whiteSpace: "pre-wrap",
+                          }}
+                        >
+                          {children}
+                        </code>
+                      );
+                    },
+                  }}
+                >
+                  {msg.text}
+                </ReactMarkdown>
               </div>
             ) : (
               <div style={{ whiteSpace: "pre-wrap" }}>{msg.text}</div>

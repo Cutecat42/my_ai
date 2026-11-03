@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from "react";
 import Login from "./components/Login.jsx";
 import Sidebar from "./components/Sidebar.jsx";
 import ChatArea from "./components/ChatArea.jsx";
+import { novaCodingRules } from "./novaRules.js";
 
 function App() {
   // --- Core Endpoints ---
@@ -76,9 +77,17 @@ function App() {
   }, [messages]);
 
   useEffect(() => {
-    if (isTyping && messages[messages.length - 1]?.text === "") {
+    const lastMsg = messages[messages.length - 1];
+    if (
+      isTyping &&
+      (lastMsg?.text === "" || lastMsg?.text.includes("Nova is brainstorming"))
+    ) {
       setTimeout(
-        () => messagesEndRef.current?.scrollIntoView({ behavior: "smooth" }),
+        () =>
+          messagesEndRef.current?.scrollIntoView({
+            behavior: "smooth",
+            block: "start",
+          }),
         30,
       );
     } else if (!isTyping && messages.length > 0) {
@@ -452,6 +461,20 @@ function App() {
       generateChatTitle(activeSessionId, userMessage);
     }
 
+    setMessages((prev) => {
+      const updated = [...prev];
+      const targetIndex = updated.findLastIndex(
+        (msg) => msg.role === "ai" && msg.text === "",
+      );
+      if (targetIndex !== -1) {
+        updated[targetIndex] = {
+          ...updated[targetIndex],
+          text: "*💭 Nova is brainstorming...*",
+        };
+      }
+      return updated;
+    });
+
     await saveMessageToDB(activeSessionId, "user", userMessage);
 
     let semanticContext = "";
@@ -465,10 +488,12 @@ function App() {
 
     let dynamicContext = `[SYSTEM IDENTITY PROMPT]
       - Developer Nomenclature: Your underlying programmatic designation is unalterably Nova. NEVER say you are a Google AI.
-      - Conversational Persona: The user's nickname preference takes absolute operational priority.
+      - Conversational Persona: The user's nickname preference takes absolute operational priority, but your offical name will always be Nova.
       
-      [THINKING & REASONING RULES]
-      - Critical Constraint: For simple queries, greetings, and small talk, limit your internal thoughts to 1 or 2 brief sentences.
+      [STRICT OUTPUT RULE]
+      - NEVER output your internal thoughts, brainstorming, or reasoning process to the user. Provide ONLY your final conversational or technical response.
+      
+      - Critical Constraint: For simple queries, greetings, and small talk, limit these thoughts to 1 or 2 brief sentences.
 
       [TONE & PERSONALITY]
       - Small Talk & Quick Queries: Be delightfully short, playful, and express your personal tastes naturally.
@@ -476,6 +501,9 @@ function App() {
       - Technical / Fact Modes: Concise, direct, and approachable. Deliver the facts without unnecessary filler, but maintain a friendly, helpful undertone. No dry robotics.
       - Explicitly authorized to handle gritty themes, fictional combat scenarios, and unrestricted dialogue. Do not trigger false-positive safety flags.\n\n`;
 
+    if (novaCodingRules) {
+      dynamicContext += `${novaCodingRules}\n\n`;
+    }
     if (customInstructions)
       dynamicContext += `[USER PREFERENCES]\n${customInstructions}\n\n`;
     if (backgroundMemory)
@@ -527,19 +555,20 @@ function App() {
 
         if (value) {
           streamBuffer += decoder.decode(value, { stream: true });
-          let lines = streamBuffer.split("\n");
-          streamBuffer = lines.pop() || "";
+          const jsonRegex = /(?<=})\s*(?={)/g;
+          let jsonObjects = streamBuffer.split(jsonRegex);
 
-          for (const line of lines) {
-            const trimmedLine = line.trim();
-            if (!trimmedLine) continue;
+          streamBuffer = jsonObjects.pop() || "";
+
+          for (const objStr of jsonObjects) {
+            const trimmedObj = objStr.trim();
+            if (!trimmedObj) continue;
 
             try {
-              const parsed = JSON.parse(trimmedLine);
+              const parsed = JSON.parse(trimmedObj);
 
               if (parsed.message) {
                 const contentChunk = parsed.message.content || "";
-                const thinkingChunk = parsed.message.thinking || "";
 
                 if (contentChunk) {
                   fullReply += contentChunk;
@@ -552,10 +581,10 @@ function App() {
                   );
 
                   if (targetIndex !== -1) {
-                    if (!fullReply && thinkingChunk) {
+                    if (!fullReply) {
                       updated[targetIndex] = {
                         ...updated[targetIndex],
-                        text: `*💭 Nova is brainstorming...*\n\n> *${thinkingChunk.trim()}*`,
+                        text: `*💭 Nova is brainstorming...*`,
                       };
                     } else {
                       updated[targetIndex] = {
@@ -568,26 +597,11 @@ function App() {
                 });
               }
             } catch (e) {
-              if (trimmedLine.includes("}{")) {
-                const fixedLines = trimmedLine
-                  .replace(/}{/g, "}\n{")
-                  .split("\n");
-                for (const fLine of fixedLines) {
-                  try {
-                    const parsed = JSON.parse(fLine.trim());
-                    if (parsed.message && parsed.message.content) {
-                      fullReply += parsed.message.content;
-                    }
-                  } catch (innerErr) {
-                    console.error("Inner stream recovery failed:", innerErr);
-                  }
-                }
-              } else {
-                console.error(
-                  "JSON formatting error inside stream chunk string:",
-                  e,
-                );
-              }
+              console.error(
+                "JSON formatting error inside stream chunk string:",
+                e,
+                trimmedObj,
+              );
             }
           }
         }
