@@ -49,6 +49,7 @@ function App() {
   const scrollContainerRef = useRef(null);
 
   const chatSessionsRef = useRef(chatSessions);
+  const previousSessionRef = useRef(null);
 
   // --- Initialization & API Fetching ---
   useEffect(() => {
@@ -78,22 +79,33 @@ function App() {
 
   useEffect(() => {
     const lastMsg = messages[messages.length - 1];
+
     if (
+      currentSessionId !== previousSessionRef.current &&
+      messages.length > 0
+    ) {
+      setTimeout(() => {
+        messagesEndRef.current?.scrollIntoView({ behavior: "auto" });
+      }, 50);
+
+      previousSessionRef.current = currentSessionId;
+    } else if (
       isTyping &&
       (lastMsg?.text === "" || lastMsg?.text.includes("Nova is brainstorming"))
     ) {
-      setTimeout(
-        () =>
-          messagesEndRef.current?.scrollIntoView({
+      setTimeout(() => {
+        const aiMessageBubble = messagesEndRef.current?.previousElementSibling;
+        if (aiMessageBubble) {
+          aiMessageBubble.scrollIntoView({
             behavior: "smooth",
             block: "start",
-          }),
-        30,
-      );
+          });
+        }
+      }, 30);
     } else if (!isTyping && messages.length > 0) {
       chatInputRef.current?.focus();
     }
-  }, [isTyping, messages]);
+  }, [isTyping, messages, currentSessionId]);
 
   // --- Database API Methods ---
   async function fetchSessions() {
@@ -443,6 +455,10 @@ function App() {
     ]);
     setInput("");
     setIsTyping(true);
+
+    if (chatInputRef.current) {
+      chatInputRef.current.style.height = "50px";
+    }
 
     if (messages.length === 0) {
       const tempTitle = userMessage.slice(0, 30) + "...";
