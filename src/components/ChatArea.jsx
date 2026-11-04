@@ -220,7 +220,7 @@ function ChatArea({
               readOnly
               value={
                 backgroundMemory ||
-                "Memory is currently empty. (Nova compacts history after 24 messages)."
+                "Memory is currently empty. (Nova smoothly rolls older messages into a summary in the background)."
               }
               style={{
                 width: "100%",

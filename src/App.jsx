@@ -1272,31 +1272,30 @@ ${formatStateForPrompt(c.state)}\n\n`;
       )
       .join("\n");
 
-    const systemInstruction = `You are a background summarizer, NOT a conversational AI. Never greet, never explain, never add commentary. Output only the updated summary in the exact format requested.`;
+    const systemInstruction = `YOU ARE A BACKGROUND SUMMARIZATION SCRIPT. YOU ARE NOT AN AI ASSISTANT. YOU CANNOT CHAT. YOU CANNOT REPLY TO THE USER. 
+    Your ONLY function is to output a structured markdown summary of the provided text. Any conversational filler, greetings, or direct replies will cause a fatal system crash.`;
 
-    const prompt = `Update the running summary of ONE ongoing chat by absorbing the NEW MESSAGES below.
+    const prompt = `Analyze the NEW MESSAGES and update the CURRENT SUMMARY. 
+    
+    RULES:
+    1. NEVER reply to the user's questions. 
+    2. NEVER write in the first person ("I", "me", "my").
+    3. ONLY output the two markdown headers requested below. Do not add intro or outro text.
+    4. Keep it under 400 words.
 
-      RULES:
-      1. NEWEST WINS. If the new messages change, remove, finish, or contradict anything in the summary, update or delete it. Never keep outdated versions.
-      2. Do NOT record to-do lists, task lists, or roadmaps, and do NOT record personal facts like names, pets, or preferences. Those are tracked separately.
-      3. Keep what is not tracked elsewhere: decisions made, what happened (story or game events), outcomes, lessons learned, open questions, the current topic and mood.
-      4. Events and lessons: one short line each, in order (for example "Scenario 1: what happened. Lesson: what we learned."). Never delete these lines unless a later message contradicts them.
-      5. Stay under 400 words total.
+    REQUIRED FORMAT:
+    ### Story / Events & Lessons
+    - [Bullet points of what occurred]
+    
+    ### Current Thread
+    [Brief description of the current topic]
 
-      Use EXACTLY this format, with no other text:
+    ====================
+    [CURRENT SUMMARY]:
+    ${stripSummaryMarker(backgroundMemory) || "(none yet)"}
 
-      ### Story / Events & Lessons
-      - ...
-
-      ### Current Thread
-      ...
-
-      ====================
-      [CURRENT SUMMARY]:
-      ${stripSummaryMarker(backgroundMemory) || "(none yet)"}
-
-      [NEW MESSAGES]:
-      ${newLog}`;
+    [NEW MESSAGES TO ABSORB]:
+    ${newLog}`;
 
     try {
       const text = await ollamaChatText({
