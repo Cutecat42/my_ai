@@ -524,16 +524,41 @@ function App() {
     if (window.innerWidth < 768) setSidebarOpen(false);
   }
 
-  async function saveMessageToDB(sessionId, role, content) {
-    try {
-      await fetch(`${API_URL}/api/save-message`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ session_id: sessionId, role, content }),
-      });
-    } catch (e) {
-      console.error("Database save failed:", e);
+  async function saveMessageToDB(sessionId, role, content, maxRetries = 3) {
+    const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        const res = await fetch(`${API_URL}/api/save-message`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ session_id: sessionId, role, content }),
+        });
+
+        if (res.ok) {
+          if (attempt > 1)
+            console.log(`✅ Message saved successfully on attempt ${attempt}`);
+          return;
+        }
+
+        console.warn(
+          `⚠️ Save failed (Status ${res.status}). Retrying... (${attempt}/${maxRetries})`,
+        );
+      } catch (e) {
+        console.warn(
+          `⚠️ Network error during save. Retrying... (${attempt}/${maxRetries})`,
+          e,
+        );
+      }
+
+      if (attempt < maxRetries) {
+        await delay(1000 * attempt);
+      }
     }
+
+    console.error(
+      "❌ CRITICAL: Message permanently failed to save after multiple attempts.",
+    );
   }
 
   async function embedAndStoreChunks(chunks, sessionId) {
@@ -722,11 +747,16 @@ function App() {
           .filter((m) => m.score === undefined || m.score >= 0.3)
           .filter((m) => {
             const md = m.metadata || {};
-            // skip chunks of THIS chat that are still inside the chat window
-            return !(
+
+            const isCurrentActive =
               md.session_id === currentSessionId &&
-              Number(md.idx) >= windowStart
+              Number(md.idx) >= windowStart;
+
+            const chatStillExists = chatSessionsRef.current.some(
+              (s) => s.id === md.session_id,
             );
+
+            return !isCurrentActive && chatStillExists;
           })
           .slice(0, 3);
 
