@@ -11,10 +11,11 @@ function looksStateful(message) {
   );
 }
 
-function looksLikeListTalk(message) {
-  return /\b(to-?do|list|tasks?|add|remove|delete|done|finished|completed|check off|cross off|roadmap|working on|next step|scenario|lesson)\b/i.test(
-    message,
-  );
+function looksLikeListTalk(message, hasList) {
+  const strong = /\b(to-?do|list|tasks?|roadmap|working on|next step)\b/i;
+  const weak =
+    /\b(add|remove|delete|done|finished|completed|check off|cross off|scenario|lesson)\b/i;
+  return strong.test(message) || (hasList && weak.test(message));
 }
 
 function claimsListChange(reply) {
@@ -37,17 +38,43 @@ function applyStateOps(stateText, ops) {
         const i = Number(n) - 1;
         if (items[i] && !items[i].startsWith("✔ ")) items[i] = "✔ " + items[i];
       });
-    if (op.op === "add")
+    if (op.op === "add") {
+      const tag = `[${String(op.list || "Main").trim()}] `;
       (op.items || []).forEach((t) => {
-        const s = String(t).trim();
+        const text = String(t).trim();
+        if (!text) return;
+        const s = tag + text;
         const exists = items.some(
           (x) => x.replace(/^✔ /, "").toLowerCase() === s.toLowerCase(),
         );
-        if (s && !exists && !adds.includes(s)) adds.push(s);
+        if (!exists && !adds.includes(s)) adds.push(s);
       });
+    }
   }
 
-  return [...items.filter((_, i) => !drop.has(i)), ...adds].join("\n");
+  const all = [...items.filter((_, i) => !drop.has(i)), ...adds];
+  const tagOf = (l) =>
+    (l.replace(/^✔ /, "").match(/^\[([^\]]+)\]/) || [null, "~"])[1];
+  const order = [...new Set(all.map(tagOf))];
+  return order.flatMap((t) => all.filter((l) => tagOf(l) === t)).join("\n");
+}
+
+function formatStateForPrompt(state) {
+  const groups = {};
+  state
+    .split("\n")
+    .filter(Boolean)
+    .forEach((line) => {
+      const done = line.startsWith("✔ ");
+      const clean = line.replace(/^✔ /, "");
+      const m = clean.match(/^\[([^\]]+)\]\s*(.*)$/);
+      const tag = m ? m[1] : "Main";
+      const text = m ? m[2] : clean;
+      (groups[tag] = groups[tag] || []).push(`- ${done ? "✔ " : ""}${text}`);
+    });
+  return Object.entries(groups)
+    .map(([tag, items]) => `**${tag}**\n${items.join("\n")}`)
+    .join("\n\n");
 }
 
 function App() {
@@ -254,7 +281,7 @@ function App() {
       .slice(0, 2);
   }
 
-  async function updateChatState(userMessage, sessionId) {
+  async function updateChatState(userMessage, sessionId, novaReply = "") {
     const all = await fetchChatStates();
     const currentText = all.find((c) => c.id === sessionId)?.state || "";
     const title =
@@ -277,19 +304,23 @@ function App() {
       {"ops":[ ... ]}
 
       Op types:
-      - {"op":"add","items":["short item","another item"]}
+      - {"op":"add","list":"Main","items":["short item","another item"]}
       - {"op":"remove","numbers":[2]}
       - {"op":"done","numbers":[1]}
       - {"op":"clear"}  (ONLY if the user says to wipe the entire list)
 
-      Rules:
-      - Act on what the USER asks for, or on what NOVA'S REPLY says was added/removed/completed because the user asked or agreed (for example the user says "sounds good" and Nova confirms she added an item).
-      - Do NOT add things Nova merely suggested that the user hasn't accepted.
-      - Keep items short. Refer to existing items by their number.
-      - If nothing about the list changes, output {"ops":[]}
+    Rules:
+    - Act on what the USER asks for, or on what NOVA'S REPLY says was added/removed/completed because the user asked or agreed.
+    - If the user asks Nova to create, draft, or make a list or plan, and her reply contains it, add those items.
+    - Do NOT add ideas Nova merely floated that the user hasn't asked for or accepted.
+    - Only add real tasks or notes. Never add placeholders, questions, or status text (like "pending" or "awaiting your directive").
+    - "list" is a section name. Reuse a section already in the CURRENT LIST whenever it fits. Create a new section only if the user names one (e.g. "add to the Code list"); otherwise use "Main" (or the only existing section).
+    - NEVER use "Completed", "Done", "Pending" or "To Do" as a section name. To finish an item, use {"op":"done","numbers":[n]} so it stays in its own section.
+    - Keep items short. Refer to existing items by their number.
+    - If nothing about the list changes, output {"ops":[]}
 
       USER MESSAGE: ${JSON.stringify(userMessage)}
-      NOVA'S REPLY: ${JSON.stringify(novaReply.slice(0, 1500))}`;
+      NOVA'S REPLY: ${JSON.stringify(String(novaReply || "").slice(0, 1500))}`;
 
     try {
       const res = await fetch(TUNNEL_URL + "/api/chat", {
@@ -308,6 +339,13 @@ function App() {
       const data = await res.json();
       const parsed = JSON.parse(data.message?.content || data.response || "{}");
       const ops = Array.isArray(parsed.ops) ? parsed.ops : [];
+      console.log(
+        "📋 Extractor raw output:",
+        data.message?.content,
+        "→ ops:",
+        ops,
+      );
+
       if (!ops.length) return;
 
       const newState = applyStateOps(currentText, ops);
@@ -837,14 +875,19 @@ ACTIVE REGISTRY FACTS or the current chat, IGNORE them.]\n${memoryText}\n\n`;
     const thisChat = chatStates.find((c) => c.id === activeSessionId);
     if (thisChat?.state) {
       dynamicContext += `[THIS CHAT'S LIST / PROJECT STATE: "${thisChat.title}"]
-      Authoritative. Use ONLY this version; never rebuild it from older memory.
-      ${thisChat.state}\n\n`;
+      Authoritative. Use ONLY this version; never rebuild it from older memory. When asked to show the list,
+       reproduce it exactly as formatted below: bold section names, each item on its own bullet line. 
+       Never show raw [tags] and never put items on one line. Use the exact section names shown below. 
+       Do not add a title for the whole list and never include the chat name. Start directly with the first section name.
+       Do not invent headings like "Planned Updates" or "Completed Tasks", and mark finished items 
+       with ✔, not [x].
+      ${formatStateForPrompt(thisChat.state)}\n\n`;
     }
 
     const mentionedChats = findMentionedChats(userMessage, activeSessionId);
     mentionedChats.forEach((c) => {
       dynamicContext += `[OTHER CHAT: "${c.title}": read-only reference. Changes must be made inside that chat.]
-      ${c.state}\n\n`;
+${formatStateForPrompt(c.state)}\n\n`;
     });
 
     const isCodey =
@@ -876,7 +919,9 @@ ACTIVE REGISTRY FACTS or the current chat, IGNORE them.]\n${memoryText}\n\n`;
     if (liveLists.length) {
       finalUserContent +=
         `\n\n[CURRENT SAVED LISTS. These are the only correct versions. Ignore any different list earlier in this conversation.]\n` +
-        liveLists.map((c) => `"${c.title}":\n${c.state}`).join("\n\n");
+        liveLists
+          .map((c) => `"${c.title}":\n${formatStateForPrompt(c.state)}`)
+          .join("\n\n");
     }
     apiMessages.push({ role: "user", content: finalUserContent });
 
@@ -979,7 +1024,10 @@ ACTIVE REGISTRY FACTS or the current chat, IGNORE them.]\n${memoryText}\n\n`;
 
       (async () => {
         if (looksStateful(userMessage)) await extractAndSaveFacts(userMessage);
-        if (looksLikeListTalk(userMessage) || claimsListChange(reply))
+        if (
+          looksLikeListTalk(userMessage, !!thisChat?.state) ||
+          claimsListChange(reply)
+        )
           await updateChatState(userMessage, activeSessionId, reply);
         if (!listRelated)
           await embedAndSaveToVectorDB(userMessage, reply, activeSessionId);
