@@ -6,9 +6,97 @@ import { novaCodingRules, novaProtocols } from "./novaRules.js";
 
 function looksStateful(message) {
   if (message.trim().split(/\s+/).length < 3) return false;
-  return /\b(my|i'm|i am|i have|i've|i use|i prefer|i like|i love|i hate|i want|i need|call me|remember|from now on|always|never|let's|change|switch|delete|forget)\b/i.test(
+  return /\b(my|i'm|i am|i have|i've|i use|i prefer|i like|i love|i hate|i want|i need|call me|remember|from now on|always|never|let's|change|switch|delete|forget|i told you|that's wrong|that is wrong|not right|actually|no,|wrong|correction|you forgot|you got .{0,20} wrong)\b/i.test(
     message,
   );
+}
+
+// ---------- Memory settings ----------
+const CHAT_WINDOW = 20;
+const SUMMARY_MIN_NEW = 8;
+const SUMMARY_MAX_BATCH = 20;
+
+function readSummaryMarker(mem) {
+  const m = (mem || "").match(/^\[upto:(\d+)\]/);
+  return m ? Number(m[1]) : 0;
+}
+function stripSummaryMarker(mem) {
+  return (mem || "").replace(/^\[upto:\d+\]\n?/, "");
+}
+
+function isListHeavy(text) {
+  const lines = (text || "").split("\n").filter((l) => l.trim());
+  if (lines.length < 4) return false;
+  const listy = lines.filter((l) =>
+    /^\s*([-*•]|\d+[.)]|✔|\[[ xX]\])/.test(l),
+  ).length;
+  return listy / lines.length > 0.5;
+}
+
+function clipMessage(text, head = 100, tail = 50) {
+  if (isListHeavy(text))
+    return "[a list: omitted, lists are tracked separately]";
+  const w = (text || "").split(/\s+/).filter(Boolean);
+  if (w.length <= head + tail) return text;
+  return w.slice(0, head).join(" ") + " … " + w.slice(-tail).join(" ");
+}
+
+function splitIntoPieces(text, maxWords) {
+  const pieces = [];
+  let cur = [],
+    count = 0;
+  for (const line of (text || "").split("\n")) {
+    const lw = line.split(/\s+/).filter(Boolean).length;
+    if (lw > maxWords) {
+      if (cur.length) {
+        pieces.push(cur.join("\n"));
+        cur = [];
+        count = 0;
+      }
+      const w = line.split(/\s+/);
+      for (let i = 0; i < w.length; i += maxWords)
+        pieces.push(w.slice(i, i + maxWords).join(" "));
+      continue;
+    }
+    if (count + lw > maxWords && cur.length) {
+      pieces.push(cur.join("\n"));
+      cur = [];
+      count = 0;
+    }
+    cur.push(line);
+    count += lw;
+  }
+  if (cur.length) pieces.push(cur.join("\n"));
+  return pieces;
+}
+
+function chunkMessages(msgs, maxWords = 250) {
+  const chunks = [];
+  const parts = {};
+  let cur = [],
+    count = 0,
+    from = null;
+  const flush = () => {
+    if (cur.length) {
+      parts[from] = (parts[from] ?? -1) + 1;
+      chunks.push({ idx: from, part: parts[from], text: cur.join("\n") });
+    }
+    cur = [];
+    count = 0;
+    from = null;
+  };
+  for (const m of msgs) {
+    const label = m.role === "user" ? "User: " : "Nova: ";
+    for (const piece of splitIntoPieces(m.text, maxWords)) {
+      const w = piece.split(/\s+/).filter(Boolean).length;
+      if (count + w > maxWords && cur.length) flush();
+      if (from === null) from = m.idx;
+      cur.push(label + piece);
+      count += w;
+    }
+  }
+  flush();
+  return chunks;
 }
 
 function looksLikeListTalk(message, hasList) {
@@ -83,6 +171,7 @@ function App() {
   const API_URL = "https://nova-api.musical-kitty.workers.dev";
   const OLLAMA_MODEL = "Nova";
   const EXTRACT_MODEL = "llama3.2:3b";
+  const SUMMARY_MODEL = "llama3.2:3b";
 
   // --- Auth State ---
   const [currentUser, setCurrentUser] = useState(
@@ -121,6 +210,10 @@ function App() {
   const [backgroundMemory, setBackgroundMemory] = useState("");
   const [isConsolidating, setIsConsolidating] = useState(false);
 
+  const [memoryBusy, setMemoryBusy] = useState(false);
+  const summaryBackoffUntil = useRef(0);
+  const currentSessionIdRef = useRef(null);
+
   const messagesEndRef = useRef(null);
   const chatInputRef = useRef(null);
   const scrollContainerRef = useRef(null);
@@ -128,7 +221,17 @@ function App() {
   const chatSessionsRef = useRef(chatSessions);
   const previousSessionRef = useRef(null);
 
-  const lastConsolidatedAt = useRef(0);
+  // Temporary tool to test the Vector DB from the F12 console
+  useEffect(() => {
+    window.testVectorSearch = async (query) => {
+      console.log(`Searching Vector DB for: "${query}"...`);
+      const result = await retrieveSemanticMemory(query);
+      console.log(
+        "Vector DB Result:",
+        result || "No matches found above 0.6 similarity.",
+      );
+    };
+  }, [currentUserId, currentSessionId]);
 
   // --- Initialization & API Fetching ---
   useEffect(() => {
@@ -138,6 +241,10 @@ function App() {
   useEffect(() => {
     chatSessionsRef.current = chatSessions;
   }, [chatSessions]);
+
+  useEffect(() => {
+    currentSessionIdRef.current = currentSessionId;
+  }, [currentSessionId]);
 
   useEffect(() => {
     if (currentUser && currentUserId) {
@@ -157,17 +264,20 @@ function App() {
   }, [currentUser, currentUserId]);
 
   useEffect(() => {
-    if (messages.length < lastConsolidatedAt.current)
-      lastConsolidatedAt.current = 0;
-    if (isTyping || isConsolidating) return;
-    if (
-      messages.length >= 24 &&
-      messages.length - lastConsolidatedAt.current >= 12
-    ) {
-      lastConsolidatedAt.current = messages.length;
+    if (isTyping || isConsolidating || memoryBusy || !currentSessionId) return;
+    if (Date.now() < summaryBackoffUntil.current) return;
+    const upto = readSummaryMarker(backgroundMemory);
+    if (messages.length - CHAT_WINDOW - upto >= SUMMARY_MIN_NEW) {
       consolidateUniversalMemory();
     }
-  }, [messages.length, isTyping]);
+  }, [
+    messages.length,
+    isTyping,
+    isConsolidating,
+    memoryBusy,
+    currentSessionId,
+    backgroundMemory,
+  ]);
 
   useEffect(() => {
     const lastMsg = messages[messages.length - 1];
@@ -198,6 +308,27 @@ function App() {
       chatInputRef.current?.focus();
     }
   }, [isTyping, messages, currentSessionId]);
+
+  // --- Re-embeds every saved chat from D1 ---
+  // Run once in the browser console: rebuildNovaIndex()
+  async function rebuildNovaIndex() {
+    for (const s of chatSessionsRef.current) {
+      const res = await fetch(`${API_URL}/api/messages?sessionId=${s.id}`);
+      if (!res.ok) continue;
+      const msgs = (await res.json())
+        .map((m, i) => ({ role: m.role, text: m.text, idx: i }))
+        .filter((m) => m.text && m.text.trim() && !isListHeavy(m.text));
+      const chunks = chunkMessages(msgs);
+      for (let i = 0; i < chunks.length; i += 16) {
+        await embedAndStoreChunks(chunks.slice(i, i + 16), s.id);
+      }
+      console.log(`✅ Indexed "${s.title}": ${chunks.length} chunks`);
+    }
+    console.log("🏁 Rebuild finished");
+  }
+  useEffect(() => {
+    window.rebuildNovaIndex = rebuildNovaIndex;
+  });
 
   // --- Database API Methods ---
   async function fetchSessions() {
@@ -385,7 +516,6 @@ function App() {
       if (res.ok) {
         const loaded = await res.json();
         setMessages(loaded);
-        lastConsolidatedAt.current = loaded.length;
       }
     } catch (e) {
       console.error("Failed to fetch messages:", e);
@@ -406,56 +536,52 @@ function App() {
     }
   }
 
-  async function embedAndSaveToVectorDB(userText, aiText, sessionId) {
-    const combinedInteraction = `User: ${userText}\nNova: ${aiText}`;
+  async function embedAndStoreChunks(chunks, sessionId) {
+    if (!chunks.length) return;
 
+    const ollamaRes = await fetch(TUNNEL_URL + "/api/embed", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: "nomic-embed-text",
+        input: chunks.map((c) => "search_document: " + c.text),
+        keep_alive: "1h",
+      }),
+    });
+    const data = await ollamaRes.json();
+    const vectors = data.embeddings;
+    if (!Array.isArray(vectors) || vectors.length !== chunks.length) {
+      console.error("❌ Embedding count mismatch:", data);
+      return;
+    }
+
+    const items = chunks.map((c, k) => ({
+      id: `${sessionId}-${c.idx}-${c.part}`,
+      vector: vectors[k],
+      text: c.text,
+      idx: c.idx,
+    }));
+
+    const res = await fetch(`${API_URL}/api/save-vectors`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        owner_id: currentUserId,
+        session_id: sessionId,
+        items,
+      }),
+    });
+    if (!res.ok) console.error("Vector save failed:", await res.text());
+    else console.log(`📚 Archived ${items.length} chunk(s)`);
+  }
+
+  async function embedAndSaveToVectorDB(userText, aiText, sessionId, startIdx) {
     try {
-      const ollamaRes = await fetch(TUNNEL_URL + "/api/embed", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          model: "nomic-embed-text",
-          input: "search_document: " + combinedInteraction,
-          keep_alive: "1h",
-        }),
-      });
-
-      const ollamaData = await ollamaRes.json();
-      console.log("📦 Raw Outbound Vector Generation Payload:", ollamaData);
-
-      let vectorArray = null;
-      if (
-        Array.isArray(ollamaData.embeddings) &&
-        ollamaData.embeddings.length > 0
-      ) {
-        vectorArray = Array.isArray(ollamaData.embeddings[0])
-          ? ollamaData.embeddings[0]
-          : ollamaData.embeddings;
-      } else if (Array.isArray(ollamaData.embedding)) {
-        vectorArray = ollamaData.embedding;
-      }
-
-      if (!vectorArray) {
-        console.error(
-          "❌ Vector generation aborted: Could not extract valid vectorArray from Ollama response layout.",
-          ollamaData,
-        );
-        return;
-      }
-
-      const saveRes = await fetch(`${API_URL}/api/save-vector`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          id: Date.now().toString(),
-          vector: vectorArray,
-          text: combinedInteraction,
-          owner_id: currentUserId,
-          session_id: sessionId,
-        }),
-      });
-      if (!saveRes.ok)
-        console.error("Vector save failed:", await saveRes.text());
+      const msgs = [
+        { role: "user", text: userText, idx: startIdx },
+        { role: "ai", text: aiText, idx: startIdx + 1 },
+      ].filter((m) => m.text && m.text.trim() && !isListHeavy(m.text));
+      await embedAndStoreChunks(chunkMessages(msgs), sessionId);
     } catch (err) {
       console.error("Vector pipeline failed:", err);
     }
@@ -473,6 +599,7 @@ function App() {
       - If the user removes, cancels, or finishes something, output the updated value, or use action "delete" if the whole fact is gone.
       - Keys: short, stable, Title_Case_With_Underscores (e.g. Pet_Names, Python_Version, Todo_List).
       - Do NOT record to-do lists, roadmaps, or project status; those are handled elsewhere. Record only who the user is (name, pets, tech stack, preferences, standing rules). Use tag "Identity".
+      - If the user is CORRECTING something ("no", "I told you", "that's wrong", "actually"), find the existing registry key it corrects and output a "set" with that exact key and the corrected value. Never create a second key for the same topic.
 
       Output ONLY JSON like:
       {"facts":[{"action":"set","key":"Pet_Names","value":"Lilly and Phantom (cats)","tag":"Identity"}]}
@@ -589,30 +716,37 @@ function App() {
       const records = searchData.matches || searchData.results || [];
 
       if (records.length > 0) {
+        const windowStart = Math.max(0, messages.length - CHAT_WINDOW);
+
         const validMatches = records
-          .filter((m) => m.score === undefined || m.score >= 0.6)
+          .filter((m) => m.score === undefined || m.score >= 0.3)
+          .filter((m) => {
+            const md = m.metadata || {};
+            // skip chunks of THIS chat that are still inside the chat window
+            return !(
+              md.session_id === currentSessionId &&
+              Number(md.idx) >= windowStart
+            );
+          })
           .slice(0, 3);
 
         if (validMatches.length === 0) return "";
 
         const memoryText = validMatches
           .map((m) => {
-            let text =
-              (typeof m.text === "string" && m.text.trim()) ||
-              (m.metadata &&
-                typeof m.metadata.text === "string" &&
-                m.metadata.text.trim()) ||
-              (typeof m.content === "string" && m.content.trim()) ||
-              JSON.stringify(m);
-            const ts = Number(m.id);
-            const when =
-              ts > 1e12 ? new Date(ts).toLocaleDateString() : "unknown date";
-            return `(saved ${when})\n${text}`;
+            const md = m.metadata || {};
+            const text = md.text || m.text || "";
+            const chat = chatSessionsRef.current.find(
+              (s) => s.id === md.session_id,
+            )?.title;
+            const when = md.ts
+              ? new Date(md.ts).toLocaleDateString()
+              : "unknown date";
+            return `(from chat "${chat || "unknown"}", ${when})\n${text}`;
           })
           .join("\n\n---\n\n");
 
-        return `[SEMANTIC RECALL: OLD CONVERSATION SNIPPETS. These may be outdated. If they conflict with 
-ACTIVE REGISTRY FACTS or the current chat, IGNORE them.]\n${memoryText}\n\n`;
+        return `[SEMANTIC RECALL: OLD CONVERSATION SNIPPETS. These may be outdated. If they conflict with ACTIVE REGISTRY FACTS, the saved list, or the current chat, IGNORE them.]\n${memoryText}\n\n`;
       }
     } catch (err) {
       console.error(
@@ -660,7 +794,6 @@ ACTIVE REGISTRY FACTS or the current chat, IGNORE them.]\n${memoryText}\n\n`;
     if (currentSessionId === id) {
       setCurrentSessionId(null);
       setMessages([]);
-      lastConsolidatedAt.current = 0;
       setBackgroundMemory("");
     }
     setActiveDropdown(null);
@@ -898,12 +1031,14 @@ ${formatStateForPrompt(c.state)}\n\n`;
     if (customInstructions)
       dynamicContext += `[USER PREFERENCES]\n${customInstructions}\n\n`;
     if (backgroundMemory)
-      dynamicContext += `[BACKGROUND MEMORY]\n${backgroundMemory}\n\n`;
+      dynamicContext += `[EARLIER IN THIS CHAT: SUMMARY]
+      This summarizes older parts of this same conversation, from before the recent messages below. If it conflicts with the recent messages, the recent messages win.
+      ${stripSummaryMarker(backgroundMemory)}\n\n`;
     if (semanticContext) dynamicContext += semanticContext;
 
     apiMessages.push({ role: "system", content: dynamicContext.trim() });
 
-    const recentMessages = messages.slice(-12);
+    const recentMessages = messages.slice(-CHAT_WINDOW);
 
     recentMessages.forEach((m) => {
       if (m.text && m.text.trim() !== "") {
@@ -1021,7 +1156,9 @@ ${formatStateForPrompt(c.state)}\n\n`;
 
       const reply = fullReply.trim();
       const listRelated = isListQuestion || claimsListChange(reply);
+      const sentAtIdx = messages.length; // position of the user message just sent
 
+      setMemoryBusy(true);
       (async () => {
         if (looksStateful(userMessage)) await extractAndSaveFacts(userMessage);
         if (
@@ -1030,8 +1167,15 @@ ${formatStateForPrompt(c.state)}\n\n`;
         )
           await updateChatState(userMessage, activeSessionId, reply);
         if (!listRelated)
-          await embedAndSaveToVectorDB(userMessage, reply, activeSessionId);
-      })().catch((e) => console.error("Background memory error:", e));
+          await embedAndSaveToVectorDB(
+            userMessage,
+            reply,
+            activeSessionId,
+            sentAtIdx,
+          );
+      })()
+        .catch((e) => console.error("Background memory error:", e))
+        .finally(() => setMemoryBusy(false));
     } catch (error) {
       console.error("Chat transmission error:", error);
       setMessages((prev) => {
@@ -1081,75 +1225,82 @@ ${formatStateForPrompt(c.state)}\n\n`;
   }
 
   async function consolidateUniversalMemory() {
-    if (messages.length < 20 || isConsolidating || !currentSessionId) return;
+    const sid = currentSessionId;
+    if (!sid || isConsolidating) return;
+
+    const upto = readSummaryMarker(backgroundMemory);
+    const outsideWindow = messages.length - CHAT_WINDOW;
+    if (outsideWindow - upto < SUMMARY_MIN_NEW) return;
+    const to = Math.min(outsideWindow, upto + SUMMARY_MAX_BATCH);
+
     setIsConsolidating(true);
 
-    const archiveLog = messages
-      .map((m) => (m.role === "user" ? "User: " : "AI: ") + m.text)
+    const newLog = messages
+      .slice(upto, to)
+      .map(
+        (m) => (m.role === "user" ? "User: " : "Nova: ") + clipMessage(m.text),
+      )
       .join("\n");
 
-    const systemInstruction = `You are a background data-compression algorithm, NOT a conversational AI. You do not greet the user. You do not acknowledge requests. Your ONLY function is to analyze the provided chat log and output a compressed state document using the EXACT markdown headers requested. Never output conversational text or internal thoughts.`;
+    const systemInstruction = `You are a background summarizer, NOT a conversational AI. Never greet, never explain, never add commentary. Output only the updated summary in the exact format requested.`;
 
-    const compressionPrompt = `Analyze the following historical log and existing background memory profile, then generate an updated, optimized memory stack.
+    const prompt = `Update the running summary of ONE ongoing chat by absorbing the NEW MESSAGES below.
 
-      CRITICAL ARCHIVAL LAW:
-      1. Maintain a "PERMANENT GLOBAL ANCHORS" section for vital, non-negotiable details (Personal Anchors, Technical Settings, Hard Lessons). Do not drop these, EXCEPT when the log shows the user changed or removed them.
-      2. NEWEST WINS: if the recent log shows an item was removed, completed, renamed, or changed, DELETE or UPDATE it in the profile. Never keep the outdated version.
-      3. Do NOT copy to-do lists or anything already listed in the Registry below. Those live in the registry.
-      4. Maintain a "FLUID GAME STATE & CONTEXT" section for active tasks and current variables.
-      5. Maintain a "RECENT CHRONOLOGICAL MILESTONES" section for the single most recent major action or pending question.
-      6. Keep the total output under 250 words.
+      RULES:
+      1. NEWEST WINS. If the new messages change, remove, finish, or contradict anything in the summary, update or delete it. Never keep outdated versions.
+      2. Do NOT record to-do lists, task lists, or roadmaps, and do NOT record personal facts like names, pets, or preferences. Those are tracked separately.
+      3. Keep what is not tracked elsewhere: decisions made, what happened (story or game events), outcomes, lessons learned, open questions, the current topic and mood.
+      4. Events and lessons: one short line each, in order (for example "Scenario 1: what happened. Lesson: what we learned."). Never delete these lines unless a later message contradicts them.
+      5. Stay under 400 words total.
 
-      Your response MUST strictly follow this exact structural markdown layout with NO introductory or concluding text:
+      Use EXACTLY this format, with no other text:
 
-      ### 🌟 PERMANENT GLOBAL ANCHORS
-      [Content here]
+      ### Story / Events & Lessons
+      - ...
 
-      ### ⚙️ FLUID GAME STATE & CONTEXT
-      [Content here]
-
-      ### 🎬 RECENT CHRONOLOGICAL MILESTONES
-      [Content here]
+      ### Current Thread
+      ...
 
       ====================
-      [Registry (authoritative, do not duplicate)]:
-      ${activeRegistry || "(empty)"}
-      ====================
-      [Existing Background Memory Profile]:
-      ${backgroundMemory || "No prior history."}
+      [CURRENT SUMMARY]:
+      ${stripSummaryMarker(backgroundMemory) || "(none yet)"}
 
-      [Recent Historical Log to Absorb]:
-      <chat_history>
-      ${archiveLog}
-      </chat_history>`;
+      [NEW MESSAGES]:
+      ${newLog}`;
 
     try {
-      const consolidatedContent = await ollamaChatText({
-        model: OLLAMA_MODEL,
+      const text = await ollamaChatText({
+        model: SUMMARY_MODEL,
         messages: [
           { role: "system", content: systemInstruction },
-          { role: "user", content: compressionPrompt },
+          { role: "user", content: prompt },
         ],
         keep_alive: "1h",
         options: { num_ctx: 8192, num_predict: 700, temperature: 0.1 },
       });
+      if (!text || text.length < 40) throw new Error("Summary came back empty");
 
-      if (consolidatedContent) {
-        setBackgroundMemory(consolidatedContent);
+      const newMemory = `[upto:${to}]\n${text}`;
 
-        const activeSession = chatSessionsRef.current.find(
-          (s) => s.id === currentSessionId,
-        );
+      if (currentSessionIdRef.current === sid) setBackgroundMemory(newMemory);
+      setChatSessions((prev) =>
+        prev.map((s) =>
+          s.id === sid ? { ...s, background_memory: newMemory } : s,
+        ),
+      );
 
-        await syncSessionToDB({
-          id: currentSessionId,
-          owner_id: currentUserId,
-          title: activeSession?.title || "Chat",
-          background_memory: consolidatedContent,
-        });
-      }
+      const title =
+        chatSessionsRef.current.find((s) => s.id === sid)?.title || "Chat";
+      await syncSessionToDB({
+        id: sid,
+        owner_id: currentUserId,
+        title,
+        background_memory: newMemory,
+      });
+      console.log(`🧾 Summary updated through message ${to}`);
     } catch (error) {
       console.error("Memory consolidation error:", error);
+      summaryBackoffUntil.current = Date.now() + 5 * 60 * 1000;
     } finally {
       setIsConsolidating(false);
     }
@@ -1217,7 +1368,7 @@ ${formatStateForPrompt(c.state)}\n\n`;
         setShowSettings={setShowSettings}
         customInstructions={customInstructions}
         setCustomInstructions={setCustomInstructions}
-        backgroundMemory={backgroundMemory}
+        backgroundMemory={stripSummaryMarker(backgroundMemory)}
         scrollContainerRef={scrollContainerRef}
         currentSessionId={currentSessionId}
         messages={messages}
