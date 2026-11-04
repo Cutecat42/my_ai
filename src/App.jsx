@@ -17,6 +17,12 @@ function looksLikeListTalk(message) {
   );
 }
 
+function claimsListChange(reply) {
+  return /\b(added|adding|removed|crossed off|checked off|marked)\b[^.\n]{0,60}\b(list|to-?do|roadmap)\b/i.test(
+    reply,
+  );
+}
+
 function applyStateOps(stateText, ops) {
   const items = stateText ? stateText.split("\n").filter(Boolean) : [];
   const drop = new Set();
@@ -264,24 +270,26 @@ function App() {
 
     const prompt = `You maintain the to-do list / project state for ONE chat called "${title}".
 
-CURRENT LIST (numbered):
-${numbered}
+      CURRENT LIST (numbered):
+      ${numbered}
 
-Read the USER MESSAGE and output ONLY JSON describing changes to the list:
-{"ops":[ ... ]}
+      Read the USER MESSAGE and output ONLY JSON describing changes to the list:
+      {"ops":[ ... ]}
 
-Op types:
-- {"op":"add","items":["short item","another item"]}
-- {"op":"remove","numbers":[2]}
-- {"op":"done","numbers":[1]}
-- {"op":"clear"}  (ONLY if the user says to wipe the entire list)
+      Op types:
+      - {"op":"add","items":["short item","another item"]}
+      - {"op":"remove","numbers":[2]}
+      - {"op":"done","numbers":[1]}
+      - {"op":"clear"}  (ONLY if the user says to wipe the entire list)
 
-Rules:
-- Act only on what the USER says about the list or project. Ignore questions and small talk.
-- Keep items short. Refer to existing items by their number.
-- If the message changes nothing, output {"ops":[]}
+      Rules:
+      - Act on what the USER asks for, or on what NOVA'S REPLY says was added/removed/completed because the user asked or agreed (for example the user says "sounds good" and Nova confirms she added an item).
+      - Do NOT add things Nova merely suggested that the user hasn't accepted.
+      - Keep items short. Refer to existing items by their number.
+      - If nothing about the list changes, output {"ops":[]}
 
-USER MESSAGE: ${JSON.stringify(userMessage)}`;
+      USER MESSAGE: ${JSON.stringify(userMessage)}
+      NOVA'S REPLY: ${JSON.stringify(novaReply.slice(0, 1500))}`;
 
     try {
       const res = await fetch(TUNNEL_URL + "/api/chat", {
@@ -966,21 +974,15 @@ ACTIVE REGISTRY FACTS or the current chat, IGNORE them.]\n${memoryText}\n\n`;
 
       saveMessageToDB(activeSessionId, "ai", fullReply.trim());
 
+      const reply = fullReply.trim();
+      const listRelated = isListQuestion || claimsListChange(reply);
+
       (async () => {
         if (looksStateful(userMessage)) await extractAndSaveFacts(userMessage);
-        if (looksLikeListTalk(userMessage))
-          await updateChatState(userMessage, activeSessionId);
-        await embedAndSaveToVectorDB(
-          userMessage,
-          fullReply.trim(),
-          activeSessionId,
-        );
-        if (!isListQuestion)
-          await embedAndSaveToVectorDB(
-            userMessage,
-            fullReply.trim(),
-            activeSessionId,
-          );
+        if (looksLikeListTalk(userMessage) || claimsListChange(reply))
+          await updateChatState(userMessage, activeSessionId, reply);
+        if (!listRelated)
+          await embedAndSaveToVectorDB(userMessage, reply, activeSessionId);
       })().catch((e) => console.error("Background memory error:", e));
     } catch (error) {
       console.error("Chat transmission error:", error);
