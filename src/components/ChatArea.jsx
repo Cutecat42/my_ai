@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useLayoutEffect } from "react";
 import ReactMarkdown from "react-markdown";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import { vscDarkPlus } from "react-syntax-highlighter/dist/esm/styles/prism";
@@ -98,6 +98,28 @@ function ChatArea({
   isTyping,
   activeDropdown,
 }) {
+  useLayoutEffect(() => {
+    const brainstormingMessage = [...messages]
+      .reverse()
+      .find(
+        (msg) =>
+          msg.role === "ai" && msg.text?.includes("Nova is brainstorming"),
+      );
+
+    if (!brainstormingMessage) return;
+
+    const element = document.getElementById(
+      `message-${brainstormingMessage.id}`,
+    );
+
+    if (element && scrollContainerRef.current) {
+      scrollContainerRef.current.scrollTo({
+        top: element.offsetTop - scrollContainerRef.current.offsetTop,
+        behavior: "auto",
+      });
+    }
+  }, [messages, scrollContainerRef]);
+
   return (
     <div
       style={{
@@ -266,7 +288,8 @@ function ChatArea({
           ?.filter((msg) => !(msg.role === "ai" && !msg.text?.trim()))
           .map((msg, i) => (
             <div
-              key={i}
+              key={msg.id || i}
+              id={msg.id ? `message-${msg.id}` : undefined}
               style={{
                 alignSelf: msg.role === "user" ? "flex-end" : "flex-start",
                 background: msg.role === "user" ? "#e8f0fe" : "#f1f3f4",

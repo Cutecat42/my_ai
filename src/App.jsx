@@ -217,6 +217,8 @@ function App() {
   const messagesEndRef = useRef(null);
   const chatInputRef = useRef(null);
   const scrollContainerRef = useRef(null);
+  const streamRenderTimerRef = useRef(null);
+  const activeAssistantMessageIdRef = useRef(null);
 
   const chatSessionsRef = useRef(chatSessions);
   const previousSessionRef = useRef(null);
@@ -291,19 +293,6 @@ function App() {
       }, 50);
 
       previousSessionRef.current = currentSessionId;
-    } else if (
-      isTyping &&
-      (lastMsg?.text === "" || lastMsg?.text.includes("Nova is brainstorming"))
-    ) {
-      setTimeout(() => {
-        const aiMessageBubble = messagesEndRef.current?.previousElementSibling;
-        if (aiMessageBubble) {
-          aiMessageBubble.scrollIntoView({
-            behavior: "smooth",
-            block: "start",
-          });
-        }
-      }, 30);
     } else if (!isTyping && messages.length > 0) {
       chatInputRef.current?.focus();
     }
@@ -963,10 +952,17 @@ function App() {
     const isListQuestion = /\b(to-?do|list|tasks?|roadmap)\b/i.test(
       userMessage,
     );
+    const assistantMessageId = crypto.randomUUID();
+    activeAssistantMessageIdRef.current = assistantMessageId;
+
     setMessages((prev) => [
       ...prev,
       { role: "user", text: userMessage },
-      { role: "ai", text: "" },
+      {
+        id: assistantMessageId,
+        role: "ai",
+        text: "",
+      },
     ]);
     setInput("");
     setIsTyping(true);
@@ -994,9 +990,10 @@ function App() {
 
     setMessages((prev) => {
       const updated = [...prev];
-      const targetIndex = updated.findLastIndex(
-        (msg) => msg.role === "ai" && msg.text === "",
+      const targetIndex = updated.findIndex(
+        (msg) => msg.id === assistantMessageId,
       );
+
       if (targetIndex !== -1) {
         updated[targetIndex] = {
           ...updated[targetIndex],
@@ -1123,6 +1120,41 @@ ${formatStateForPrompt(c.state)}\n\n`;
       let fullReply = "";
       let streamBuffer = "";
 
+      const flushStreamToUI = () => {
+        if (streamRenderTimerRef.current) {
+          clearTimeout(streamRenderTimerRef.current);
+          streamRenderTimerRef.current = null;
+        }
+
+        const textToRender = fullReply;
+
+        setMessages((prev) =>
+          prev.map((msg) =>
+            msg.id === assistantMessageId
+              ? { ...msg, text: textToRender }
+              : msg,
+          ),
+        );
+      };
+
+      const scheduleStreamRender = () => {
+        if (streamRenderTimerRef.current) return;
+
+        streamRenderTimerRef.current = setTimeout(() => {
+          streamRenderTimerRef.current = null;
+
+          const textToRender = fullReply;
+
+          setMessages((prev) =>
+            prev.map((msg) =>
+              msg.id === assistantMessageId
+                ? { ...msg, text: textToRender }
+                : msg,
+            ),
+          );
+        }, 35);
+      };
+
       const processStreamLine = (line) => {
         const trimmed = line.trim();
         if (!trimmed) return;
@@ -1144,22 +1176,7 @@ ${formatStateForPrompt(c.state)}\n\n`;
 
         if (contentChunk) {
           fullReply += contentChunk;
-
-          setMessages((prev) => {
-            const updated = [...prev];
-            const targetIndex = updated.findLastIndex(
-              (msg) => msg.role === "ai",
-            );
-
-            if (targetIndex !== -1) {
-              updated[targetIndex] = {
-                ...updated[targetIndex],
-                text: fullReply,
-              };
-            }
-
-            return updated;
-          });
+          scheduleStreamRender();
         }
       };
 
@@ -1191,20 +1208,21 @@ ${formatStateForPrompt(c.state)}\n\n`;
         );
       }
 
-      setMessages((prev) => {
-        const updated = [...prev];
-        const targetIndex = updated.findLastIndex((msg) => msg.role === "ai");
-        if (targetIndex !== -1) {
-          updated[targetIndex] = { role: "ai", text: fullReply.trim() };
-        }
-        return updated;
-      });
+      flushStreamToUI();
+
+      setMessages((prev) =>
+        prev.map((msg) =>
+          msg.id === assistantMessageId
+            ? { ...msg, text: fullReply.trim() }
+            : msg,
+        ),
+      );
 
       saveMessageToDB(activeSessionId, "ai", fullReply.trim());
 
       const reply = fullReply.trim();
       const listRelated = isListQuestion || claimsListChange(reply);
-      const sentAtIdx = messages.length; // position of the user message just sent
+      const sentAtIdx = messages.length;
 
       setMemoryBusy(true);
       (async () => {
@@ -1226,20 +1244,32 @@ ${formatStateForPrompt(c.state)}\n\n`;
         .finally(() => setMemoryBusy(false));
     } catch (error) {
       console.error("Chat transmission error:", error);
-      setMessages((prev) => {
-        const updated = [...prev];
-        const lastIndex = updated.length - 1;
-        if (updated[lastIndex] && updated[lastIndex].role === "ai") {
-          updated[lastIndex] = {
-            ...updated[lastIndex],
-            text: "❌ Error: " + error.message,
-          };
-          return updated;
-        }
-        return [...prev, { role: "ai", text: "❌ Error: " + error.message }];
-      });
+      if (streamRenderTimerRef.current) {
+        clearTimeout(streamRenderTimerRef.current);
+        streamRenderTimerRef.current = null;
+      }
+
+      setMessages((prev) =>
+        prev.map((msg) =>
+          msg.id === assistantMessageId
+            ? {
+                ...msg,
+                text: "❌ Error: " + error.message,
+              }
+            : msg,
+        ),
+      );
       setIsConnected(false);
     } finally {
+      if (streamRenderTimerRef.current) {
+        clearTimeout(streamRenderTimerRef.current);
+        streamRenderTimerRef.current = null;
+      }
+
+      if (activeAssistantMessageIdRef.current === assistantMessageId) {
+        activeAssistantMessageIdRef.current = null;
+      }
+
       setIsTyping(false);
     }
   }
