@@ -413,6 +413,13 @@ function App() {
   }
 
   async function updateChatState(userMessage, sessionId, novaReply = "") {
+    if (
+      novaReply.includes("Nova is brainstorming") ||
+      novaReply.includes("Error:")
+    ) {
+      console.log("🚫 Extractor bypassed: Placeholder or error detected.");
+      return;
+    }
     const all = await fetchChatStates();
     const currentText = all.find((c) => c.id === sessionId)?.state || "";
     const title =
@@ -463,7 +470,7 @@ function App() {
           stream: false,
           format: "json",
           think: false,
-          keep_alive: "1h",
+          keep_alive: 0,
           options: { temperature: 0, num_ctx: 4096, num_predict: 800 },
         }),
       });
@@ -570,7 +577,7 @@ function App() {
       body: JSON.stringify({
         model: "nomic-embed-text",
         input: chunks.map((c) => "search_document: " + c.text),
-        keep_alive: "1h",
+        keep_alive: 0,
       }),
     });
     const data = await ollamaRes.json();
@@ -642,7 +649,7 @@ function App() {
           stream: false,
           format: "json",
           think: false,
-          keep_alive: "1h",
+          keep_alive: 0,
           options: { temperature: 0, num_ctx: 4096, num_predict: 600 },
         }),
       });
@@ -701,7 +708,7 @@ function App() {
         body: JSON.stringify({
           model: "nomic-embed-text",
           input: "search_query: " + userText,
-          keep_alive: "1h",
+          keep_alive: 0,
         }),
       });
 
@@ -1100,7 +1107,7 @@ ${formatStateForPrompt(c.state)}\n\n`;
           stream: true,
           keep_alive: "1h",
           options: {
-            num_ctx: 8192,
+            num_ctx: 4096,
             num_predict: 4096,
           },
         }),
@@ -1111,9 +1118,50 @@ ${formatStateForPrompt(c.state)}\n\n`;
 
       const reader = res.body.getReader();
       const decoder = new TextDecoder("utf-8");
+
       let done = false;
       let fullReply = "";
       let streamBuffer = "";
+
+      const processStreamLine = (line) => {
+        const trimmed = line.trim();
+        if (!trimmed) return;
+
+        let parsed;
+
+        try {
+          parsed = JSON.parse(trimmed);
+        } catch (error) {
+          console.error("Invalid Ollama stream record:", trimmed, error);
+          throw new Error("Ollama returned malformed streaming data.");
+        }
+
+        if (parsed.error) {
+          throw new Error(parsed.error);
+        }
+
+        const contentChunk = parsed.message?.content ?? parsed.response ?? "";
+
+        if (contentChunk) {
+          fullReply += contentChunk;
+
+          setMessages((prev) => {
+            const updated = [...prev];
+            const targetIndex = updated.findLastIndex(
+              (msg) => msg.role === "ai",
+            );
+
+            if (targetIndex !== -1) {
+              updated[targetIndex] = {
+                ...updated[targetIndex],
+                text: fullReply,
+              };
+            }
+
+            return updated;
+          });
+        }
+      };
 
       while (!done) {
         const { value, done: readerDone } = await reader.read();
@@ -1121,56 +1169,26 @@ ${formatStateForPrompt(c.state)}\n\n`;
 
         if (value) {
           streamBuffer += decoder.decode(value, { stream: true });
-          const jsonRegex = /(?<=})\s*(?={)/g;
-          let jsonObjects = streamBuffer.split(jsonRegex);
 
-          streamBuffer = jsonObjects.pop() || "";
+          const lines = streamBuffer.split("\n");
+          streamBuffer = lines.pop() || "";
 
-          for (const objStr of jsonObjects) {
-            const trimmedObj = objStr.trim();
-            if (!trimmedObj) continue;
-
-            try {
-              const parsed = JSON.parse(trimmedObj);
-
-              if (parsed.message) {
-                const contentChunk = parsed.message.content || "";
-
-                if (contentChunk) {
-                  fullReply += contentChunk;
-                }
-
-                setMessages((prev) => {
-                  const updated = [...prev];
-                  const targetIndex = updated.findLastIndex(
-                    (msg) => msg.role === "ai",
-                  );
-
-                  if (targetIndex !== -1) {
-                    if (!fullReply) {
-                      updated[targetIndex] = {
-                        ...updated[targetIndex],
-                        text: `*💭 Nova is brainstorming...*`,
-                      };
-                    } else {
-                      updated[targetIndex] = {
-                        ...updated[targetIndex],
-                        text: fullReply,
-                      };
-                    }
-                  }
-                  return updated;
-                });
-              }
-            } catch (e) {
-              console.error(
-                "JSON formatting error inside stream chunk string:",
-                e,
-                trimmedObj,
-              );
-            }
+          for (const line of lines) {
+            processStreamLine(line);
           }
         }
+      }
+
+      streamBuffer += decoder.decode();
+
+      if (streamBuffer.trim()) {
+        processStreamLine(streamBuffer);
+      }
+
+      if (!fullReply.trim()) {
+        throw new Error(
+          "Ollama completed the stream without returning response text. Check Ollama and server logs.",
+        );
       }
 
       setMessages((prev) => {
@@ -1304,8 +1322,8 @@ ${formatStateForPrompt(c.state)}\n\n`;
           { role: "system", content: systemInstruction },
           { role: "user", content: prompt },
         ],
-        keep_alive: "1h",
-        options: { num_ctx: 8192, num_predict: 700, temperature: 0.1 },
+        keep_alive: 0,
+        options: { num_ctx: 4096, num_predict: 700, temperature: 0.1 },
       });
       if (!text || text.length < 40) throw new Error("Summary came back empty");
 

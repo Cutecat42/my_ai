@@ -262,96 +262,68 @@ function ChatArea({
           </div>
         )}
 
-        {messages?.map((msg, i) => (
-          <div
-            key={i}
-            style={{
-              alignSelf: msg.role === "user" ? "flex-end" : "flex-start",
-              background: msg.role === "user" ? "#e8f0fe" : "#f1f3f4",
-              color: "#202124",
-              padding: "12px 18px",
-              borderRadius: "24px",
-              borderBottomRightRadius: msg.role === "user" ? "6px" : "24px",
-              borderBottomLeftRadius: msg.role === "ai" ? "6px" : "24px",
-              maxWidth: window.innerWidth < 768 ? "90%" : "75%",
-              lineHeight: "1.6",
-              fontSize: "15px",
-            }}
-          >
-            {msg.role === "ai" && msg.text === "" ? (
-              <div style={{ display: "flex", gap: "6px", padding: "4px 0" }}>
-                <span
-                  style={{
-                    width: "8px",
-                    height: "8px",
-                    background: "#80868b",
-                    borderRadius: "50%",
-                    animation: "geminiPulse 1.2s infinite both 0s",
-                  }}
-                />
-                <span
-                  style={{
-                    width: "8px",
-                    height: "8px",
-                    background: "#80868b",
-                    borderRadius: "50%",
-                    animation: "geminiPulse 1.2s infinite both 0.2s",
-                  }}
-                />
-                <span
-                  style={{
-                    width: "8px",
-                    height: "8px",
-                    background: "#80868b",
-                    borderRadius: "50%",
-                    animation: "geminiPulse 1.2s infinite both 0.4s",
-                  }}
-                />
-              </div>
-            ) : msg.role === "ai" ? (
-              <div className="markdown-body">
-                <ReactMarkdown
-                  components={{
-                    code({ node, inline, className, children, ...props }) {
-                      const match = /language-(\w+)/.exec(className || "");
+        {messages
+          ?.filter((msg) => !(msg.role === "ai" && !msg.text?.trim()))
+          .map((msg, i) => (
+            <div
+              key={i}
+              style={{
+                alignSelf: msg.role === "user" ? "flex-end" : "flex-start",
+                background: msg.role === "user" ? "#e8f0fe" : "#f1f3f4",
+                color: "#202124",
+                padding: "12px 18px",
+                borderRadius: "24px",
+                borderBottomRightRadius: msg.role === "user" ? "6px" : "24px",
+                borderBottomLeftRadius: msg.role === "ai" ? "6px" : "24px",
+                maxWidth: window.innerWidth < 768 ? "90%" : "75%",
+                lineHeight: "1.6",
+                fontSize: "15px",
+              }}
+            >
+              {msg.role === "ai" ? (
+                <div className="markdown-body">
+                  <ReactMarkdown
+                    components={{
+                      code({ node, inline, className, children, ...props }) {
+                        const match = /language-(\w+)/.exec(className || "");
 
-                      let rawString = "";
-                      if (node && node.children && node.children.length > 0) {
-                        rawString = node.children[0].value;
-                      } else {
-                        rawString = String(children).replace(/\n$/, "");
-                      }
+                        let rawString = "";
+                        if (node && node.children && node.children.length > 0) {
+                          rawString = node.children[0].value;
+                        } else {
+                          rawString = String(children).replace(/\n$/, "");
+                        }
 
-                      return !inline && match ? (
-                        <CodeBlock match={match} codeString={rawString} />
-                      ) : (
-                        <code
-                          {...props}
-                          className={className}
-                          style={{
-                            background: "#d7dadd",
-                            padding: "2px 6px",
-                            borderRadius: "4px",
-                            color: "#d93025",
-                            fontFamily: "monospace",
-                            fontSize: "13px",
-                            whiteSpace: "pre-wrap",
-                          }}
-                        >
-                          {children}
-                        </code>
-                      );
-                    },
-                  }}
-                >
-                  {msg.text}
-                </ReactMarkdown>
-              </div>
-            ) : (
-              <div style={{ whiteSpace: "pre-wrap" }}>{msg.text}</div>
-            )}
-          </div>
-        ))}
+                        return !inline && match ? (
+                          <CodeBlock match={match} codeString={rawString} />
+                        ) : (
+                          <code
+                            {...props}
+                            className={className}
+                            style={{
+                              background: "#d7dadd",
+                              padding: "2px 6px",
+                              borderRadius: "4px",
+                              color: "#d93025",
+                              fontFamily: "monospace",
+                              fontSize: "13px",
+                              whiteSpace: "pre-wrap",
+                            }}
+                          >
+                            {children}
+                          </code>
+                        );
+                      },
+                    }}
+                  >
+                    {msg.text}
+                  </ReactMarkdown>
+                </div>
+              ) : (
+                <div style={{ whiteSpace: "pre-wrap" }}>{msg.text}</div>
+              )}
+            </div>
+          ))}
         <div ref={messagesEndRef} />
       </div>
 
