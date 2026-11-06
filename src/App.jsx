@@ -169,6 +169,7 @@ function App() {
   // --- Core Endpoints ---
   const TUNNEL_URL = "https://prefers-starting-bar-rear.trycloudflare.com";
   const API_URL = "https://nova-api.musical-kitty.workers.dev";
+  const LOCAL_BACKEND = "http://localhost:3001";
   const OLLAMA_MODEL = "Nova";
   const EXTRACT_MODEL = "llama3.2:3b";
   const SUMMARY_MODEL = "llama3.2:3b";
@@ -222,18 +223,6 @@ function App() {
 
   const chatSessionsRef = useRef(chatSessions);
   const previousSessionRef = useRef(null);
-
-  // Temporary tool to test the Vector DB from the F12 console
-  useEffect(() => {
-    window.testVectorSearch = async (query) => {
-      console.log(`Searching Vector DB for: "${query}"...`);
-      const result = await retrieveSemanticMemory(query);
-      console.log(
-        "Vector DB Result:",
-        result || "No matches found above 0.6 similarity.",
-      );
-    };
-  }, [currentUserId, currentSessionId]);
 
   // --- Initialization & API Fetching ---
   useEffect(() => {
@@ -1095,10 +1084,11 @@ ${formatStateForPrompt(c.state)}\n\n`;
     apiMessages.push({ role: "user", content: finalUserContent });
 
     try {
-      const res = await fetch(TUNNEL_URL + "/api/chat", {
+      const res = await fetch(LOCAL_BACKEND + "/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
+          session_id: activeSessionId,
           model: OLLAMA_MODEL,
           messages: apiMessages,
           stream: true,
@@ -1217,8 +1207,6 @@ ${formatStateForPrompt(c.state)}\n\n`;
             : msg,
         ),
       );
-
-      saveMessageToDB(activeSessionId, "ai", fullReply.trim());
 
       const reply = fullReply.trim();
       const listRelated = isListQuestion || claimsListChange(reply);
